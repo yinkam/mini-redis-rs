@@ -1,26 +1,41 @@
 #![allow(unused_imports)]
-use std::net::{TcpListener, TcpStream};
+
+mod resp;
+
+use std::borrow::Cow;
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::str;
 use std::thread;
+use resp::parser::parse;
+use resp::value::*;
 
 
 fn handler(mut stream: &TcpStream) {
     println!("Connection from {}", stream.peer_addr().unwrap());
-    let mut buffer = [0; 1024];
+    let mut buffer = [0; 512];
     loop {
         match stream.read(&mut buffer) {
             Ok(bytes) => {
                 if bytes == 0 {
                     break;
                 }
-                let received_data = String::from_utf8_lossy(&buffer[..bytes]);
-                match received_data.to_string().as_str() {
-                    "PING\n" => {
-                        stream.write_all(b"+PONG\r\n").unwrap();
+
+                let (_, parsed_command) = parse(&buffer);
+                match parsed_command {
+                    Value::Array(arr)  => {
+                        match &arr[0] {
+                            Value::BulkString(string) => {
+                                match string.as_str() {
+                                    "PING" => stream.write_all(b"+PONG\r\n").unwrap(),
+                                    "ECHO" => stream.write_all(&arr[1].to_resp()).unwrap(),
+                                    _ => println!("Invalid command: {}", string),
+                                }
+                            }
+                            _ => println!("Invalid command"),
+                        }
                     }
-                    _ => {
-                        stream.write_all(b"+PONG\r\n").unwrap();
-                    }
+                    _ => stream.write_all(b"+PONG\r\n").unwrap()
                 }
             }
             Err(e) => {
@@ -28,7 +43,6 @@ fn handler(mut stream: &TcpStream) {
             }
         }
     }
-
 }
 
 fn main() {
@@ -41,7 +55,7 @@ fn main() {
         match stream {
             Ok(mut _stream) => {
                 println!("accepted new connection");
-                thread::spawn( move || {
+                thread::spawn(move || {
                     handler(&_stream);
                 });
             }

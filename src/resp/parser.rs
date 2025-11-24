@@ -1,34 +1,14 @@
 use anyhow::Error;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::process::Command;
 use std::str::Utf8Error;
+use super::value::*;
 
-const CRLF: &[u8] = b"\r\n";
-const CRLF_OFFSET: usize = CRLF.len();
 
-#[derive(Debug, PartialEq)]
-pub enum Value {
-    SimpleString(String),
-    SimpleError(String),
-    Integer(i64),
-    BulkString(String),
-    Array(Vec<Value>),
-    Null,
-    Boolean(bool),
-    Double(f64),
-    BigNumber(BigInt),
-    BulkError(String),
-    VerbatimString,
-    Map,
-    Attribute,
-    Set,
-    Push,
-}
 
 pub fn parse(buffer: &[u8]) -> (usize, Value) {
-    println!("PARSE: {:?}", std::str::from_utf8(buffer));
 
     if buffer.is_empty() {
         return (0, Value::SimpleError("INVALID BUFFER".to_string()));
@@ -101,7 +81,6 @@ fn _parse_simple_error(buffer: &[u8]) -> (usize, Value) {
 }
 
 fn _parse_bulk_string(buffer: &[u8]) -> (usize, Value) {
-    println!("BULK_STRING_PARSE: {:?}", std::str::from_utf8(buffer));
     if buffer[0] == b'0' {
         return (1, Value::BulkString("".to_string()));
     }
@@ -110,7 +89,7 @@ fn _parse_bulk_string(buffer: &[u8]) -> (usize, Value) {
         return (2, Value::Null);
     }
 
-    let (start, length) = _parse_element_length(buffer);
+    let (start, _) = _parse_element_length(buffer);
 
     let start = start + CRLF_OFFSET;
     let mut bytes_consumed = start;
@@ -225,12 +204,10 @@ fn _parse_big_number(buffer: &[u8]) -> (usize, Value) {
 }
 
 fn _parse_bulk_error(buffer: &[u8]) -> (usize, Value) {
-    println!("BULK_ERROR_PARSE: {:?}", std::str::from_utf8(buffer));
-    let (start, length) = _parse_element_length(buffer);
+    let (start, _) = _parse_element_length(buffer);
 
     let start = start + CRLF_OFFSET;
     let mut bytes_consumed = start;
-    println!("{:?}", std::str::from_utf8(&buffer[start..]));
     for i in start..buffer.len() {
         if buffer[i] == b'\r' && buffer[i + 1] == b'\n' {
             break;
@@ -249,14 +226,13 @@ fn _parse_bulk_error(buffer: &[u8]) -> (usize, Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resp_parser::Value::*;
 
     #[test]
     fn test_simple_string() {
         let input = b"+OK\r\n";
         let (_, result) = parse(input);
         match result {
-            SimpleString(s) => assert_eq!(s, "OK"),
+            Value::SimpleString(s) => assert_eq!(s, "OK"),
             _ => panic!("Wrong type"),
         }
     }
@@ -266,7 +242,7 @@ mod tests {
         let input = b"-Error message\r\n";
         let (_, result) = parse(input);
         match result {
-            SimpleError(s) => assert_eq!(s, "Error message"),
+            Value::SimpleError(s) => assert_eq!(s, "Error message"),
             _ => panic!("Wrong type"),
         }
     }
@@ -279,7 +255,7 @@ mod tests {
             let input = b":134445553333\r\n";
             let (_, result) = parse(input);
                 match result {
-                Integer(s) => assert_eq!(s, 134445553333),
+                Value::Integer(s) => assert_eq!(s, 134445553333),
                 _ => panic!("Wrong type"),
             }
         }
@@ -289,7 +265,7 @@ mod tests {
             let input = b":+5\r\n";
             let (_, result) = parse(input);
                 match result {
-                Integer(s) => assert_eq!(s, 5),
+                Value::Integer(s) => assert_eq!(s, 5),
                 _ => panic!("Wrong type"),
             }
         }
@@ -299,7 +275,7 @@ mod tests {
             let input = b":-2\r\n";
             let (_, result) = parse(input);
                 match result {
-                Integer(s) => assert_eq!(s, -2),
+                Value::Integer(s) => assert_eq!(s, -2),
                 _ => panic!("Wrong type"),
             }
         }
@@ -313,7 +289,7 @@ mod tests {
             let input = b"$4\r\nPING\r\n";
             let (_, result) = parse(input);
             match result {
-                BulkString(s) => assert_eq!(s, "PING"),
+                Value::BulkString(s) => assert_eq!(s, "PING"),
                 _ => panic!("Wrong type"),
             }
         }
@@ -323,7 +299,7 @@ mod tests {
             let input = b"$0\r\n\r\n";
             let (_, result) = parse(input);
             match result {
-                BulkString(s) => assert_eq!(s, ""),
+                Value::BulkString(s) => assert_eq!(s, ""),
                 _ => panic!("Wrong type"),
             }
         }
@@ -332,7 +308,7 @@ mod tests {
             let input = b"$-1\r\n";
             let (_, result) = parse(input);
             match result {
-                s => assert_eq!(s, Null),
+                s => assert_eq!(s, Value::Null),
             }
         }
     }
@@ -345,10 +321,10 @@ mod tests {
             let input = b"*2\r\n$12\r\nPINGPONGPING\r\n:42\r\n";
             let (_, result) = parse(input);
             match result {
-                Array(arr) => {
+                Value::Array(arr) => {
                     let expected = vec![
-                        BulkString("PINGPONGPING".to_string()),
-                        Integer(42),
+                        Value::BulkString("PINGPONGPING".to_string()),
+                        Value::Integer(42),
                     ];
                     assert_eq!(arr, expected);
                 }
@@ -361,7 +337,7 @@ mod tests {
             let input = b"*-1\r\n";
             let (_, result) = parse(input);
             match result {
-                arr => assert_eq!(arr, Null),
+                arr => assert_eq!(arr, Value::Null),
             }
         }
 
@@ -370,11 +346,11 @@ mod tests {
             let input = b"*3\r\n$5\r\nhello\r\n$-1\r\n$5\r\nworld\r\n";
             let (_, result) = parse(input);
             match result {
-                Array(arr) => {
+                Value::Array(arr) => {
                     let expected = vec![
-                        BulkString("hello".to_string()),
-                        Null,
-                        BulkString("world".to_string()),
+                        Value::BulkString("hello".to_string()),
+                        Value::Null,
+                        Value::BulkString("world".to_string()),
                     ];
                     assert_eq!(arr, expected);
                 }
@@ -387,15 +363,18 @@ mod tests {
             let input = b"*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Hello\r\n-World\r\n";
             let (_, result) = parse(input);
             match result {
-                Array(arr) => {
+                Value::Array(arr) => {
                     let expected = vec![
-                        Array(vec![Integer(1), Integer(2), Integer(3)]),
-                        Array(vec![
-                            SimpleString("Hello".to_string()),
-                            SimpleError("World".to_string()),
+                        Value::Array(vec![
+                            Value::Integer(1),
+                            Value::Integer(2),
+                            Value::Integer(3)
+                        ]),
+                        Value::Array(vec![
+                            Value::SimpleString("Hello".to_string()),
+                            Value::SimpleError("World".to_string()),
                         ]),
                     ];
-                    println!("expected: {:?}", arr);
                     assert_eq!(arr, expected);
                 }
                 _ => panic!("Wrong type. got {:?}", result),
@@ -408,7 +387,7 @@ mod tests {
         let input = b"_\r\n";
         let (_, result) = parse(input);
         match result {
-            n => assert_eq!(n, Null),
+            n => assert_eq!(n, Value::Null),
         }
     }
 
@@ -420,7 +399,7 @@ mod tests {
             let input = b"#t\r\n";
             let (_, result) = parse(input);
             match result {
-                Boolean(s) => assert_eq!(s, true),
+                Value::Boolean(s) => assert_eq!(s, true),
                 _ => panic!("Wrong type"),
             }
         }
@@ -430,7 +409,7 @@ mod tests {
             let input = b"#f\r\n";
             let (_, result) = parse(input);
             match result {
-                Boolean(s) => assert_eq!(s, false),
+                Value::Boolean(s) => assert_eq!(s, false),
                 _ => panic!("Wrong type"),
             }
         }
@@ -443,8 +422,8 @@ mod tests {
         fn test_double() {
             let input = b",1.23\r\n";
             let (_, result) = parse(input);
-                match result {
-                Double(s) => assert_eq!(s, 1.23),
+            match result {
+                Value::Double(s) => assert_eq!(s, 1.23),
                 _ => panic!("Wrong type"),
             }
         }
@@ -453,8 +432,8 @@ mod tests {
         fn test_positive_sign_double() {
             let input = b",+2.43\r\n";
             let (_, result) = parse(input);
-                match result {
-                Double(s) => assert_eq!(s, 2.43),
+            match result {
+                Value::Double(s) => assert_eq!(s, 2.43),
                 _ => panic!("Wrong type"),
             }
         }
@@ -463,8 +442,8 @@ mod tests {
         fn test_negative_sign_double() {
             let input = b",-5.24513\r\n";
             let (_, result) = parse(input);
-                match result {
-                Double(s) => assert_eq!(s, -5.24513),
+            match result {
+                Value::Double(s) => assert_eq!(s, -5.24513),
                 _ => panic!("Wrong type"),
             }
         }
@@ -474,7 +453,7 @@ mod tests {
             let input = b",inf\r\n";
             let (_, result) = parse(input);
                 match result {
-                Double(s) => assert_eq!(s, f64::INFINITY),
+                    Value::Double(s) => assert_eq!(s, f64::INFINITY),
                 _ => panic!("Wrong type"),
             }
         }
@@ -484,7 +463,7 @@ mod tests {
             let input = b",-inf\r\n";
             let (_, result) = parse(input);
                 match result {
-                Double(s) => assert_eq!(s, f64::NEG_INFINITY),
+                    Value::Double(s) => assert_eq!(s, f64::NEG_INFINITY),
                 _ => panic!("Wrong type"),
             }
         }
@@ -494,7 +473,7 @@ mod tests {
             let input = b",nan\r\n";
             let (_, result) = parse(input);
                 match result {
-                Double(s) => assert!(s.is_nan()),
+                    Value::Double(s) => assert!(s.is_nan()),
                 _ => panic!("Wrong type"),
             }
         }
@@ -509,7 +488,7 @@ mod tests {
             let input = b"(3492890328409238509324850943850943825024385\r\n";
             let (_, result) = parse(input);
             match result {
-                BigNumber(s) => assert_eq!(s, BIG_INT_STRING.parse::<BigInt>().unwrap()),
+                Value::BigNumber(s) => assert_eq!(s, BIG_INT_STRING.parse::<BigInt>().unwrap()),
                 _ => panic!("Wrong type"),
             }
         }
@@ -519,7 +498,7 @@ mod tests {
             let input = b"(-3492890328409238509324850943850943825024385\r\n";
             let (_, result) = parse(input);
             match result {
-                BigNumber(s) => {
+                Value::BigNumber(s) => {
                     let negative_big_int = String::from("-") + BIG_INT_STRING;
                     assert_eq!(s, negative_big_int.parse::<BigInt>().unwrap())
                 },
@@ -532,7 +511,7 @@ mod tests {
             let input = b"(+3492890328409238509324850943850943825024385\r\n";
             let (_, result) = parse(input);
             match result {
-                BigNumber(s) => {
+                Value::BigNumber(s) => {
                     let positive_big_int = String::from("+") + BIG_INT_STRING;
                     assert_eq!(s, positive_big_int.parse::<BigInt>().unwrap())
                 },
@@ -546,7 +525,7 @@ mod tests {
         let input = b"!21\r\nSYNTAX invalid syntax\r\n";
         let (_, result) = parse(input);
         match result {
-            BulkError(s) => assert_eq!(s, "SYNTAX invalid syntax"),
+            Value::BulkError(s) => assert_eq!(s, "SYNTAX invalid syntax"),
             _ => panic!("Wrong type"),
         }
     }

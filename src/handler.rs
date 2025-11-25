@@ -2,10 +2,10 @@ use crate::resp::value::Value;
 use crate::resp::{parser::parse, value::Value::*};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::{MutexGuard};
+use std::sync::{Arc, Mutex};
 use crate::cache::Cache;
 
-pub fn tcp_handler(mut stream: &TcpStream, mut db: MutexGuard<Cache>) {
+pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
     println!("Connection from {}", stream.peer_addr().unwrap());
     let mut buffer = [0; 512];
     loop {
@@ -16,7 +16,7 @@ pub fn tcp_handler(mut stream: &TcpStream, mut db: MutexGuard<Cache>) {
                 }
 
                 let (_, parsed_command) = parse(&buffer);
-                process_command(stream, &mut db, parsed_command)
+                process_command(stream, &db, parsed_command)
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -25,7 +25,7 @@ pub fn tcp_handler(mut stream: &TcpStream, mut db: MutexGuard<Cache>) {
     }
 }
 
-fn process_command(mut stream: &TcpStream, db: &mut MutexGuard<Cache>, command: Value, ) {
+fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: Value, ) {
     match command {
         Array(arr) => match &arr[0] {
             BulkString(string) => match string.as_str() {
@@ -34,17 +34,19 @@ fn process_command(mut stream: &TcpStream, db: &mut MutexGuard<Cache>, command: 
                 "SET" => {
                     let key = arr[1].to_resp();
                     let value = arr[2].to_resp();
+
+                    let mut db = db.lock().unwrap();
                     let res = db.insert(key, value);
 
                     match res {
                         Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
                         None => stream.write_all(b"+OK\r\n").unwrap(),
                     }
-
-                    stream.write_all(b"+OK\r\n").unwrap()
                 }
                 "GET" => {
                     let key = arr[1].to_resp();
+
+                    let db = db.lock().unwrap();
                     let value = db.get(&key);
 
                     match value {

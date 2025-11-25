@@ -21,7 +21,6 @@ fn main() {
                 println!("accepted new connection");
                 let db = Arc::clone(&db);
                 thread::spawn(move || {
-                    let db = db.lock().unwrap();
                     tcp_handler(&_stream, db);
                 });
             }

@@ -1,11 +1,11 @@
 use crate::resp::value::Value;
 use crate::resp::{parser::parse, value::Value::*};
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{MutexGuard};
+use crate::cache::Cache;
 
-pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>) {
+pub fn tcp_handler(mut stream: &TcpStream, mut db: MutexGuard<Cache>) {
     println!("Connection from {}", stream.peer_addr().unwrap());
     let mut buffer = [0; 512];
     loop {
@@ -16,7 +16,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<HashMap<Vec<u8>, Vec<u8
                 }
 
                 let (_, parsed_command) = parse(&buffer);
-                process_command(stream, &db, parsed_command)
+                process_command(stream, &mut db, parsed_command)
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -25,11 +25,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<HashMap<Vec<u8>, Vec<u8
     }
 }
 
-fn process_command(
-    mut stream: &TcpStream,
-    db: &Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
-    command: Value,
-) {
+fn process_command(mut stream: &TcpStream, db: &mut MutexGuard<Cache>, command: Value, ) {
     match command {
         Array(arr) => match &arr[0] {
             BulkString(string) => match string.as_str() {
@@ -38,13 +34,18 @@ fn process_command(
                 "SET" => {
                     let key = arr[1].to_resp();
                     let value = arr[2].to_resp();
-                    db.lock().unwrap().entry(key).or_insert(value);
+                    let res = db.insert(key, value);
+
+                    match res {
+                        Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                        None => stream.write_all(b"+OK\r\n").unwrap(),
+                    }
 
                     stream.write_all(b"+OK\r\n").unwrap()
                 }
                 "GET" => {
                     let key = arr[1].to_resp();
-                    let value = db.lock().unwrap().get(&key).cloned();
+                    let value = db.get(&key);
 
                     match value {
                         Some(value) => stream.write_all(&value).unwrap(),

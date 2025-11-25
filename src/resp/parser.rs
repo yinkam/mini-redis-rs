@@ -1,5 +1,5 @@
 use super::value::*;
-use num_bigint::{BigInt};
+use num_bigint::BigInt;
 
 pub fn parse(buffer: &[u8]) -> (usize, Value) {
     if buffer.is_empty() {

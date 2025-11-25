@@ -1,15 +1,7 @@
-use anyhow::Error;
-use num_bigint::{BigInt, Sign};
-use std::borrow::Cow;
-use std::cmp::PartialEq;
-use std::process::Command;
-use std::str::Utf8Error;
 use super::value::*;
-
-
+use num_bigint::{BigInt};
 
 pub fn parse(buffer: &[u8]) -> (usize, Value) {
-
     if buffer.is_empty() {
         return (0, Value::SimpleError("INVALID BUFFER".to_string()));
     }
@@ -118,7 +110,10 @@ fn _parse_integer(buffer: &[u8]) -> (usize, Value) {
     let s = std::str::from_utf8(buffer).unwrap().to_string();
     match s.parse::<i64>() {
         Ok(i) => (bytes_consumed, Value::Integer(i)),
-        Err(_) => (bytes_consumed, Value::SimpleError("INVALID_INTEGER".to_string())),
+        Err(_) => (
+            bytes_consumed,
+            Value::SimpleError("INVALID_INTEGER".to_string()),
+        ),
     }
 }
 
@@ -254,7 +249,7 @@ mod tests {
         fn test_unsigned_integer() {
             let input = b":134445553333\r\n";
             let (_, result) = parse(input);
-                match result {
+            match result {
                 Value::Integer(s) => assert_eq!(s, 134445553333),
                 _ => panic!("Wrong type"),
             }
@@ -264,7 +259,7 @@ mod tests {
         fn test_positive_sign_integer() {
             let input = b":+5\r\n";
             let (_, result) = parse(input);
-                match result {
+            match result {
                 Value::Integer(s) => assert_eq!(s, 5),
                 _ => panic!("Wrong type"),
             }
@@ -274,7 +269,7 @@ mod tests {
         fn test_negative_sign_integer() {
             let input = b":-2\r\n";
             let (_, result) = parse(input);
-                match result {
+            match result {
                 Value::Integer(s) => assert_eq!(s, -2),
                 _ => panic!("Wrong type"),
             }
@@ -368,7 +363,7 @@ mod tests {
                         Value::Array(vec![
                             Value::Integer(1),
                             Value::Integer(2),
-                            Value::Integer(3)
+                            Value::Integer(3),
                         ]),
                         Value::Array(vec![
                             Value::SimpleString("Hello".to_string()),
@@ -452,8 +447,8 @@ mod tests {
         fn test_infinity() {
             let input = b",inf\r\n";
             let (_, result) = parse(input);
-                match result {
-                    Value::Double(s) => assert_eq!(s, f64::INFINITY),
+            match result {
+                Value::Double(s) => assert_eq!(s, f64::INFINITY),
                 _ => panic!("Wrong type"),
             }
         }
@@ -462,8 +457,8 @@ mod tests {
         fn test_negative_infinity() {
             let input = b",-inf\r\n";
             let (_, result) = parse(input);
-                match result {
-                    Value::Double(s) => assert_eq!(s, f64::NEG_INFINITY),
+            match result {
+                Value::Double(s) => assert_eq!(s, f64::NEG_INFINITY),
                 _ => panic!("Wrong type"),
             }
         }
@@ -472,8 +467,8 @@ mod tests {
         fn test_not_a_number() {
             let input = b",nan\r\n";
             let (_, result) = parse(input);
-                match result {
-                    Value::Double(s) => assert!(s.is_nan()),
+            match result {
+                Value::Double(s) => assert!(s.is_nan()),
                 _ => panic!("Wrong type"),
             }
         }
@@ -501,7 +496,7 @@ mod tests {
                 Value::BigNumber(s) => {
                     let negative_big_int = String::from("-") + BIG_INT_STRING;
                     assert_eq!(s, negative_big_int.parse::<BigInt>().unwrap())
-                },
+                }
                 _ => panic!("Wrong type"),
             }
         }
@@ -514,7 +509,7 @@ mod tests {
                 Value::BigNumber(s) => {
                     let positive_big_int = String::from("+") + BIG_INT_STRING;
                     assert_eq!(s, positive_big_int.parse::<BigInt>().unwrap())
-                },
+                }
                 _ => panic!("Wrong type"),
             }
         }

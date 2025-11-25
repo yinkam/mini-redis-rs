@@ -1,2 +1,2 @@
-pub mod value;
 pub mod parser;
+pub mod value;

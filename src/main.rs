@@ -1,12 +1,12 @@
+mod cache;
 mod handler;
 mod resp;
-mod cache;
 
+use cache::Cache;
 use handler::tcp_handler;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use cache::Cache;
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.

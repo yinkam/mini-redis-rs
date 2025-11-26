@@ -1,9 +1,10 @@
+use crate::cache::Cache;
 use crate::resp::value::Value;
 use crate::resp::{parser::parse, value::Value::*};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
-use crate::cache::Cache;
+use std::time::{Duration, Instant};
 
 pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
     println!("Connection from {}", stream.peer_addr().unwrap());
@@ -16,7 +17,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
                 }
 
                 let (_, parsed_command) = parse(&buffer);
-                process_command(stream, &db, parsed_command)
+                process_command(stream, &db, &parsed_command)
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -25,38 +26,67 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
     }
 }
 
-fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: Value, ) {
+fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Value) {
     match command {
         Array(arr) => match &arr[0] {
-            BulkString(string) => match string.as_str() {
+            BulkString(string) => match string.to_uppercase().as_ref() {
                 "PING" => stream.write_all(b"+PONG\r\n").unwrap(),
                 "ECHO" => stream.write_all(&arr[1].to_resp()).unwrap(),
                 "SET" => {
                     let key = arr[1].to_resp();
                     let value = arr[2].to_resp();
 
-                    let mut db = db.lock().unwrap();
-                    let res = db.insert(key, value);
+                    if arr.len() > 3 {
+                        match &arr[3] {
+                            BulkString(string) => match string.to_uppercase().as_ref() {
+                                "PX" => match &arr[4] {
+                                    BulkString(x) => {
+                                        let time = x.parse::<u64>().unwrap();
+                                        let mut db = db.lock().unwrap();
+                                        let duration = Duration::from_millis(time);
+                                        let expiry_time = Instant::now() + duration;
+                                        match db.insert(key, value, Some(expiry_time)) {
+                                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                                        }
+                                    }
+                                    _ => println!("INVALID VALUE TYPE {:?}", &arr[3]),
+                                },
+                                "EX" => match &arr[4] {
+                                    BulkString(x) => {
+                                        println!("duration: {}", x);
+                                        let time = x.parse::<u64>().unwrap();
+                                        let mut db = db.lock().unwrap();
+                                        let duration = Duration::from_secs(time);
+                                        let expiry_time = Instant::now() + duration;
+                                        match db.insert(key, value, Some(expiry_time)) {
+                                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                                        }
+                                    }
+                                    _ => println!("INVALID VALUE {:?}", &arr[3]),
+                                },
+                                _ => println!("INVALID COMMAND {:?}", &arr[3]),
+                            },
+                            _ => println!("INVALID TYPE {:?}", &arr[2]),
+                        }
+                    } else {
+                        let mut db = db.lock().unwrap();
+                        let res = db.insert(key, value, None);
 
-                    match res {
-                        Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                        None => stream.write_all(b"+OK\r\n").unwrap(),
+                        match res {
+                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                        }
                     }
                 }
                 "GET" => {
                     let key = arr[1].to_resp();
+                    let null_bulk_string = b"$-1\r\n".to_vec();
 
-                    let db = db.lock().unwrap();
-                    let value = db.get(&key);
-
-                    match value {
-                        Some(value) => stream.write_all(&value).unwrap(),
-                        None => {
-                            let null = Null.to_resp();
-                            stream.write_all(&null).unwrap()
-                        }
-                    }
-                    stream.write_all(&arr[1].to_resp()).unwrap()
+                    let mut db = db.lock().unwrap();
+                    let value = &db.get(&key).unwrap_or(null_bulk_string);
+                    stream.write_all(value).unwrap()
                 }
                 _ => println!("Invalid command: {}", string),
             },

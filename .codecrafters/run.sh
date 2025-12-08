@@ -8,4 +8,4 @@
 
 set -e # Exit on failure
 
-exec /tmp/codecrafters-build-redis-rust/release/codecrafters-redis "$@"
+exec /tmp/codecrafters-build-redis-rust/release/mini-redis-rs "$@"

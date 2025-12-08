@@ -1,13 +1,12 @@
 use crate::cache::Cache;
 use crate::resp::value::Value;
 use crate::resp::{parser::parse, value::Value::*};
+use mio::net::TcpStream;
+use std::io::ErrorKind::WouldBlock;
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
-    println!("Connection from {}", stream.peer_addr().unwrap());
+pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache) {
     let mut buffer = [0; 512];
     loop {
         match stream.read(&mut buffer) {
@@ -17,8 +16,9 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
                 }
 
                 let (_, parsed_command) = parse(&buffer);
-                process_command(stream, &db, &parsed_command)
+                process_command(stream, db, &parsed_command)
             }
+            Err(ref err) if err.kind() == WouldBlock => break,
             Err(e) => {
                 println!("error: {}", e);
             }
@@ -26,7 +26,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: Arc<Mutex<Cache>>) {
     }
 }
 
-fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Value) {
+fn process_command(mut stream: &TcpStream, db: &mut Cache, command: &Value) {
     match command {
         Array(arr) => match &arr[0] {
             BulkString(string) => match string.to_uppercase().as_ref() {
@@ -42,7 +42,6 @@ fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Val
                                 "PX" => match &arr[4] {
                                     BulkString(x) => {
                                         let time = x.parse::<u64>().unwrap();
-                                        let mut db = db.lock().unwrap();
                                         let duration = Duration::from_millis(time);
                                         let expiry_time = Instant::now() + duration;
                                         match db.insert(key, value, Some(expiry_time)) {
@@ -56,7 +55,6 @@ fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Val
                                     BulkString(x) => {
                                         println!("duration: {}", x);
                                         let time = x.parse::<u64>().unwrap();
-                                        let mut db = db.lock().unwrap();
                                         let duration = Duration::from_secs(time);
                                         let expiry_time = Instant::now() + duration;
                                         match db.insert(key, value, Some(expiry_time)) {
@@ -66,12 +64,11 @@ fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Val
                                     }
                                     _ => println!("INVALID VALUE {:?}", &arr[3]),
                                 },
-                                _ => println!("INVALID COMMAND {:?}", &arr[3]),
+                                _ => println!("INVALID SUBCOMMAND {:?}", &arr[3]),
                             },
-                            _ => println!("INVALID TYPE {:?}", &arr[2]),
+                            _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
                         }
                     } else {
-                        let mut db = db.lock().unwrap();
                         let res = db.insert(key, value, None);
 
                         match res {
@@ -84,14 +81,13 @@ fn process_command(mut stream: &TcpStream, db: &Arc<Mutex<Cache>>, command: &Val
                     let key = arr[1].to_resp();
                     let null_bulk_string = b"$-1\r\n".to_vec();
 
-                    let mut db = db.lock().unwrap();
                     let value = &db.get(&key).unwrap_or(null_bulk_string);
                     stream.write_all(value).unwrap()
                 }
-                _ => println!("Invalid command: {}", string),
+                _ => stream.write_all(b"-ERR Unknown command\r\n").unwrap(),
             },
             _ => println!("Invalid command"),
         },
-        _ => stream.write_all(b"+PONG\r\n").unwrap(),
+        _ => stream.write_all(b"-Err an error occured\r\n").unwrap(),
     }
 }

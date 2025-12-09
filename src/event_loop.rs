@@ -6,16 +6,18 @@ use std::io::Error;
 use std::io::ErrorKind::WouldBlock;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use crate::ServerInfo;
 
 pub struct EventLoop {
     listener: TcpListener,
     poll: Poll,
     events: Events,
     connections: HashMap<Token, TcpStream>,
+    server_info: ServerInfo
 }
 
 impl EventLoop {
-    pub fn new(address: &str) -> Self {
+    pub fn new(address: &str, server_info: ServerInfo) -> Self {
         let address = SocketAddr::from_str(address).unwrap();
         let listener = TcpListener::bind(address).unwrap();
         let poll = match Poll::new() {
@@ -31,12 +33,13 @@ impl EventLoop {
             poll,
             events,
             connections,
+            server_info
         }
     }
 
     pub fn run<F>(&mut self, mut db: Cache, handler: F) -> Result<(), Error>
     where
-        F: Fn(&TcpStream, &mut Cache),
+        F: Fn(&TcpStream, &mut Cache, &ServerInfo),
     {
         const SERVER: Token = Token(0);
         let mut next_token = 1;
@@ -74,7 +77,7 @@ impl EventLoop {
                             None => continue,
                         };
 
-                        handler(socket, &mut db);
+                        handler(socket, &mut db, &self.server_info);
                     }
                 }
             }

@@ -32,62 +32,66 @@ fn process_command(mut stream: &TcpStream, db: &mut Cache, command: &Value) {
             BulkString(string) => match string.to_uppercase().as_ref() {
                 "PING" => stream.write_all(b"+PONG\r\n").unwrap(),
                 "ECHO" => stream.write_all(&arr[1].to_resp()).unwrap(),
-                "SET" => {
-                    let key = arr[1].to_resp();
-                    let value = arr[2].to_resp();
-
-                    if arr.len() > 3 {
-                        match &arr[3] {
-                            BulkString(string) => match string.to_uppercase().as_ref() {
-                                "PX" => match &arr[4] {
-                                    BulkString(x) => {
-                                        let time = x.parse::<u64>().unwrap();
-                                        let duration = Duration::from_millis(time);
-                                        let expiry_time = Instant::now() + duration;
-                                        match db.insert(key, value, Some(expiry_time)) {
-                                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                                            None => stream.write_all(b"+OK\r\n").unwrap(),
-                                        }
-                                    }
-                                    _ => println!("INVALID VALUE TYPE {:?}", &arr[3]),
-                                },
-                                "EX" => match &arr[4] {
-                                    BulkString(x) => {
-                                        println!("duration: {}", x);
-                                        let time = x.parse::<u64>().unwrap();
-                                        let duration = Duration::from_secs(time);
-                                        let expiry_time = Instant::now() + duration;
-                                        match db.insert(key, value, Some(expiry_time)) {
-                                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                                            None => stream.write_all(b"+OK\r\n").unwrap(),
-                                        }
-                                    }
-                                    _ => println!("INVALID VALUE {:?}", &arr[3]),
-                                },
-                                _ => println!("INVALID SUBCOMMAND {:?}", &arr[3]),
-                            },
-                            _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
-                        }
-                    } else {
-                        let res = db.insert(key, value, None);
-
-                        match res {
-                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                            None => stream.write_all(b"+OK\r\n").unwrap(),
-                        }
-                    }
-                }
-                "GET" => {
-                    let key = arr[1].to_resp();
-                    let null_bulk_string = b"$-1\r\n".to_vec();
-
-                    let value = &db.get(&key).unwrap_or(null_bulk_string);
-                    stream.write_all(value).unwrap()
-                }
+                "SET" => execute_set(stream, arr, db),
+                "GET" => execute_get(stream, arr, db),
                 _ => stream.write_all(b"-ERR Unknown command\r\n").unwrap(),
             },
             _ => println!("Invalid command"),
         },
         _ => stream.write_all(b"-Err an error occured\r\n").unwrap(),
     }
+}
+
+
+fn execute_set(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
+    let key = arr[1].to_resp();
+    let value = arr[2].to_resp();
+
+    if arr.len() > 3 {
+        match &arr[3] {
+            BulkString(string) => match string.to_uppercase().as_ref() {
+                "PX" => match &arr[4] {
+                    BulkString(x) => {
+                        let time = x.parse::<u64>().unwrap();
+                        let duration = Duration::from_millis(time);
+                        let expiry_time = Instant::now() + duration;
+                        match db.insert(key, value, Some(expiry_time)) {
+                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                        }
+                    }
+                    _ => println!("INVALID VALUE TYPE {:?}", &arr[3]),
+                },
+                "EX" => match &arr[4] {
+                    BulkString(x) => {
+                        let time = x.parse::<u64>().unwrap();
+                        let duration = Duration::from_secs(time);
+                        let expiry_time = Instant::now() + duration;
+                        match db.insert(key, value, Some(expiry_time)) {
+                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                        }
+                    }
+                    _ => println!("INVALID VALUE {:?}", &arr[3]),
+                },
+                _ => println!("INVALID SUBCOMMAND {:?}", &arr[3]),
+            },
+            _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+        }
+    } else {
+        let res = db.insert(key, value, None);
+
+        match res {
+            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
+            None => stream.write_all(b"+OK\r\n").unwrap(),
+        }
+    }
+}
+
+fn execute_get(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
+    let key = arr[1].to_resp();
+    let null_bulk_string = b"$-1\r\n".to_vec();
+
+    let value = &db.get(&key).unwrap_or(null_bulk_string);
+    stream.write_all(value).unwrap()
 }

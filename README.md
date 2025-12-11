@@ -1,5 +1,3 @@
-[![progress-banner](https://backend.codecrafters.io/progress/redis/e065b20a-7134-4c04-b00b-92a7cf28eb4d)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
-
 # Redis Clone in Rust
 
 A lightweight, event-driven Redis implementation in Rust featuring non-blocking I/O and RESP protocol parsing. Built as part of the [CodeCrafters "Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis) to explore systems programming and distributed systems concepts.
@@ -23,31 +21,33 @@ A lightweight, event-driven Redis implementation in Rust featuring non-blocking 
 The application uses a single-threaded event loop powered by `mio` for asynchronous I/O operations:
 
 ```text
-┌─────────────────────────────────────────┐
-│         Event Loop (mio::Poll)          │
-│                                         │
-│  ┌───────────┐      ┌──────────────┐   │
-│  │  Server   │─────▶│  Connection  │   │
-│  │  Listener │      │   Registry   │   │
-│  └───────────┘      └──────────────┘   │
-│                            │            │
-│                            ▼            │
-│                     ┌─────────────┐    │
-│                     │   Handler   │    │
-│                     │  (TCP I/O)  │    │
-│                     └─────────────┘    │
-│                            │            │
-│                            ▼            │
-│                     ┌─────────────┐    │
-│                     │    Cache    │    │
-│                     │  (HashMap)  │    │
-│                     └─────────────┘    │
-└─────────────────────────────────────────┘
+                    Event Loop (mio::Poll)
+                    
+    Server Listener ──register──> Poll Registry
+       (Token 0)                       │
+                                       │ notify
+                                       ▼
+                                  Events Channel
+                                  │           │
+                   New Connection?│           │ Readable?
+                                  ▼           ▼
+                           Accept Client   Handler
+                            (Token n)       (TCP I/O)
+                                  │           │
+                          register│           ▼
+                                  │         Cache
+                                  │       (HashMap)
+                                  │           │
+                                  └───────────┘
+                                    loop back
 ```
 
-1. **Poll Loop**: Uses `mio::Poll` to monitor multiple TCP connections for readiness events
-2. **Connection Management**: Maintains a `HashMap` of client connections indexed by tokens
-3. **Non-blocking I/O**: All socket operations return immediately, preventing thread blocking
+**Flow:**
+
+1. **Server Registration**: `TcpListener` registered with `Poll::Registry` using `Token(0)`
+2. **Event Channel**: `Events` buffer receives readiness notifications from the OS
+3. **Client Registration**: New clients registered via `Poll::Registry` with unique `Token(n)` where n > 0
+4. **Non-blocking I/O**: All socket operations return immediately, preventing thread blocking
 
 ### RESP Protocol Parsing
 

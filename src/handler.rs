@@ -1,11 +1,11 @@
 use crate::cache::Cache;
 use crate::resp::value::Value;
 use crate::resp::{parser::parse, value::Value::*};
+use crate::ServerInfo;
 use mio::net::TcpStream;
 use std::io::ErrorKind::WouldBlock;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
-use crate::ServerInfo;
 
 pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerInfo) {
     let mut buffer = [0; 512];
@@ -27,7 +27,12 @@ pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerI
     }
 }
 
-fn process_command(mut stream: &TcpStream, db: &mut Cache, command: &Value, server_info: &ServerInfo) {
+fn process_command(
+    mut stream: &TcpStream,
+    db: &mut Cache,
+    command: &Value,
+    server_info: &ServerInfo,
+) {
     match command {
         Array(arr) => match &arr[0] {
             BulkString(string) => match string.to_uppercase().as_ref() {
@@ -43,7 +48,6 @@ fn process_command(mut stream: &TcpStream, db: &mut Cache, command: &Value, serv
         _ => stream.write_all(b"-Err an error occured\r\n").unwrap(),
     }
 }
-
 
 fn execute_set(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
     let key = arr[1].to_resp();
@@ -98,10 +102,16 @@ fn execute_get(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
     stream.write_all(value).unwrap()
 }
 
-
-fn execute_info(mut stream: &TcpStream, _arr: &Vec<Value>, _db: &mut Cache, server_info: &ServerInfo) {
-    let role = format!("role:{}", server_info.role);
-    let server_info = BulkString(role);
+fn execute_info(
+    mut stream: &TcpStream,
+    _arr: &Vec<Value>,
+    _db: &mut Cache,
+    server_info: &ServerInfo,
+) {
+    let server_info = BulkString(format!(
+        "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}",
+        server_info.role, server_info.master_replid, server_info.master_repl_offset
+    ));
 
     stream.write_all(&server_info.to_resp()).unwrap()
 }

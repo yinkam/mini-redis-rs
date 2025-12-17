@@ -1,4 +1,5 @@
 use crate::cache::Cache;
+use crate::ServerInfo;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
@@ -6,14 +7,13 @@ use std::io::Error;
 use std::io::ErrorKind::WouldBlock;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use crate::ServerInfo;
 
 pub struct EventLoop {
     listener: TcpListener,
     poll: Poll,
     events: Events,
     connections: HashMap<Token, TcpStream>,
-    server_info: ServerInfo
+    server_info: ServerInfo,
 }
 
 impl EventLoop {
@@ -33,7 +33,7 @@ impl EventLoop {
             poll,
             events,
             connections,
-            server_info
+            server_info,
         }
     }
 

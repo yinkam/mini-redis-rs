@@ -58,7 +58,7 @@ impl Value {
                     [a.iter().map(Value::to_resp).flatten().collect::<Vec<u8>>()].concat();
 
                 let combined =
-                    [head, num_elements, CRLF.to_vec(), elements, CRLF.to_vec()].concat();
+                    [head, num_elements, CRLF.to_vec(), elements].concat();
                 combined
             }
             Value::Null => {

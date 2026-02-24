@@ -41,6 +41,7 @@ fn process_command(
                 "SET" => execute_set(stream, arr, db),
                 "GET" => execute_get(stream, arr, db),
                 "INFO" => execute_info(stream, arr, db, server_info),
+                "REPLCONF" => execute_replconf(stream, arr),
                 _ => stream.write_all(b"-ERR Unknown command\r\n").unwrap(),
             },
             _ => println!("Invalid command"),
@@ -114,4 +115,26 @@ fn execute_info(
     ));
 
     stream.write_all(&server_info.to_resp()).unwrap()
+}
+
+fn execute_replconf(mut stream: &TcpStream, arr: &Vec<Value>) {
+    println!("EXECUTE REPLCONF");
+
+    match &arr[1] {
+        BulkString(string) => match string.to_lowercase().as_ref() {
+            "listening-port" => match &arr[2] {
+                BulkString(_x) => stream.write_all(b"+OK\r\n").unwrap(),
+                _ => println!("INVALID listening port {:?}", &arr[2]),
+            },
+            "capa" => match &arr[2] {
+                BulkString(x) => match x.to_lowercase().as_ref() {
+                    "psync2" => stream.write_all(b"+OK\r\n").unwrap(),
+                    _ => println!("INVALID CAPA COMMAND {:?}", &arr[2]),
+                },
+                _ => println!("INVALID VALUE {:?}", &arr[3]),
+            },
+            _ => println!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
+        },
+        _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+    }
 }

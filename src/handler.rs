@@ -42,6 +42,7 @@ fn process_command(
                 "GET" => execute_get(stream, arr, db),
                 "INFO" => execute_info(stream, arr, db, server_info),
                 "REPLCONF" => execute_replconf(stream, arr),
+                "PSYNC" => execute_psync(stream, arr, server_info),
                 _ => stream.write_all(b"-ERR Unknown command\r\n").unwrap(),
             },
             _ => println!("Invalid command"),
@@ -118,7 +119,6 @@ fn execute_info(
 }
 
 fn execute_replconf(mut stream: &TcpStream, arr: &Vec<Value>) {
-    println!("EXECUTE REPLCONF");
 
     match &arr[1] {
         BulkString(string) => match string.to_lowercase().as_ref() {
@@ -134,6 +134,26 @@ fn execute_replconf(mut stream: &TcpStream, arr: &Vec<Value>) {
                 _ => println!("INVALID VALUE {:?}", &arr[3]),
             },
             _ => println!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
+        },
+        _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+    }
+}
+
+fn execute_psync(mut stream: &TcpStream, arr: &Vec<Value>, server_info: &ServerInfo,) {
+
+    match &arr[1] {
+        BulkString(string) => match string.to_lowercase().as_ref() {
+            "?" => match &arr[2] {
+                BulkString(_x) => {
+                    let response = SimpleString(format!(
+                        "FULLRESYNC {} {}",
+                        server_info.master_replid, server_info.master_repl_offset
+                    ));
+                    stream.write_all(&response.to_resp()).unwrap()
+                },
+                _ => println!("INVALID listening port {:?}", &arr[2]),
+            },
+            _ => println!("INVALID PSYNC COMMAND {:?}", &arr[3]),
         },
         _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
     }

@@ -75,6 +75,8 @@ fn handshake(stream: &mut TcpStream) -> Result<(), std::io::Error> {
         ));
     }
 
+    stream.write_all(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")?;
+
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use mio::net::TcpStream;
 use std::io::ErrorKind::WouldBlock;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
+use crate::rdb::RDB;
 
 pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerInfo) {
     let mut buffer = [0; 512];
@@ -149,7 +150,12 @@ fn execute_psync(mut stream: &TcpStream, arr: &Vec<Value>, server_info: &ServerI
                         "FULLRESYNC {} {}",
                         server_info.master_replid, server_info.master_repl_offset
                     ));
-                    stream.write_all(&response.to_resp()).unwrap()
+                    stream.write_all(&response.to_resp()).unwrap();
+
+                    let rdb_file = RDB::new().to_binary().unwrap();
+                    let response = format!("${}\r\n", &rdb_file.len());
+                    stream.write_all(&response.as_bytes()).unwrap();
+                    stream.write_all(&rdb_file).unwrap();
                 },
                 _ => println!("INVALID listening port {:?}", &arr[2]),
             },

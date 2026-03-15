@@ -3,6 +3,7 @@ mod cache;
 mod event_loop;
 mod handler;
 mod resp;
+mod rdb;
 
 use cache::Cache;
 use clap::Parser;

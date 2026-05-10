@@ -12,6 +12,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerI
     let mut buffer = [0; 512];
     loop {
         match stream.read(&mut buffer) {
+            // TODO: handle partial reads/failures of the byte stream
             Ok(bytes) => {
                 if bytes == 0 {
                     break;

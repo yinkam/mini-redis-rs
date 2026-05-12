@@ -2,13 +2,14 @@ use std::io::{Read, Write};
 mod cache;
 mod event_loop;
 mod handler;
-mod resp;
 mod rdb;
+mod resp;
 
 use cache::Cache;
 use clap::Parser;
 use event_loop::EventLoop;
 use handler::tcp_handler;
+use mio::Token;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 
@@ -19,6 +20,7 @@ struct ServerInfo {
     master_port: Option<String>,
     master_replid: String,
     master_repl_offset: String,
+    replica_token: Option<Token>,
 }
 #[derive(Parser)]
 struct Cli {
@@ -29,7 +31,7 @@ struct Cli {
     master_addr: Option<String>,
 }
 
-fn connect_master(server_info: &ServerInfo) -> Result<(), std::io::Error> {
+fn connect_master(server_info: &ServerInfo) -> Result<TcpStream, std::io::Error> {
     let host = match &server_info.master_host {
         Some(host) => host,
         None => "localhost",
@@ -45,7 +47,7 @@ fn connect_master(server_info: &ServerInfo) -> Result<(), std::io::Error> {
 
     // HANDSHAKE
     handshake(&mut stream)?;
-    Ok(())
+    Ok(stream)
 }
 
 fn handshake(stream: &mut TcpStream) -> Result<(), std::io::Error> {
@@ -83,7 +85,6 @@ fn handshake(stream: &mut TcpStream) -> Result<(), std::io::Error> {
 
 fn read_response(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut buffer = [0; 512];
-    println!("READ RESPONSE: {:?}", buffer);
     let n = stream.read(&mut buffer)?;
     Ok(buffer[..n].to_vec())
 }
@@ -111,16 +112,20 @@ fn main() {
         master_port,
         master_replid,
         master_repl_offset,
+        replica_token: None,
     };
 
     if server_info.role == "slave" {
         match connect_master(&server_info) {
-            Ok(()) => println!("Successfully connected to master server"),
+            Ok(_) => {
+                println!("Successfully connected to master server")
+            }
             Err(e) => {
                 println!("Failed to connect to master: {}", e);
             }
         }
     }
+
     let address = format!("127.0.0.1:{}", cli.port);
     let db = Cache::new();
     let mut event_loop = EventLoop::new(&address, server_info);

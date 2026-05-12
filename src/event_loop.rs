@@ -39,7 +39,7 @@ impl EventLoop {
 
     pub fn run<F>(&mut self, mut db: Cache, handler: F) -> Result<(), Error>
     where
-        F: Fn(&TcpStream, &mut Cache, &ServerInfo),
+        F: Fn(&mut Cache, &Token, &mut HashMap<Token, TcpStream>, &mut ServerInfo),
     {
         const SERVER: Token = Token(0);
         let mut next_token = 1;
@@ -72,12 +72,16 @@ impl EventLoop {
                         }
                     },
                     client => {
-                        let socket = match self.connections.get_mut(&client) {
+                        match self.connections.get_mut(&client) {
                             Some(socket) => socket,
                             None => continue,
                         };
-
-                        handler(socket, &mut db, &self.server_info);
+                        handler(
+                            &mut db,
+                            &client,
+                            &mut self.connections,
+                            &mut self.server_info,
+                        );
                     }
                 }
             }

@@ -1,14 +1,43 @@
 use crate::cache::Cache;
+use crate::rdb::RDB;
 use crate::resp::value::Value;
-use crate::resp::{parser::parse, value::Value::*};
+use crate::resp::{parser, value::Value::*};
 use crate::ServerInfo;
 use mio::net::TcpStream;
-use std::io::ErrorKind::WouldBlock;
-use std::io::{Read, Write};
+use mio::Token;
+use std::collections::HashMap;
+use std::io::ErrorKind::{NotFound, WouldBlock};
+use std::io::{Error, Read, Write};
 use std::time::{Duration, Instant};
-use crate::rdb::RDB;
 
-pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerInfo) {
+pub fn tcp_handler(
+    db: &mut Cache,
+    client: &Token,
+    connections: &mut HashMap<Token, TcpStream>,
+    server_info: &mut ServerInfo,
+) {
+    let buffer = match read_buffer(client, connections) {
+        Some(v) => v,
+        None => return,
+    };
+    let (_, parsed_command) = parser::parse(&buffer);
+    let _ = match process_command(db, &parsed_command, client, connections, server_info)
+        .expect("Error processing command")
+    {
+        Some(_) => propagate_command(server_info, connections, buffer),
+        None => return,
+    };
+}
+
+fn read_buffer(client: &Token, connections: &mut HashMap<Token, TcpStream>) -> Option<Vec<u8>> {
+    let stream = match connections.get_mut(&client) {
+        Some(socket) => socket,
+        None => {
+            println!("Error getting stream");
+            return None;
+        }
+    };
+
     let mut buffer = [0; 512];
     loop {
         match stream.read(&mut buffer) {
@@ -18,8 +47,7 @@ pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerI
                     break;
                 }
 
-                let (_, parsed_command) = parse(&buffer);
-                process_command(stream, db, &parsed_command, server_info);
+                return Some(buffer[..bytes].to_vec());
             }
             Err(ref err) if err.kind() == WouldBlock => break,
             Err(e) => {
@@ -27,33 +55,92 @@ pub fn tcp_handler(mut stream: &TcpStream, db: &mut Cache, server_info: &ServerI
             }
         }
     }
+    None
 }
 
-fn process_command(
-    mut stream: &TcpStream,
-    db: &mut Cache,
-    command: &Value,
-    server_info: &ServerInfo,
-) {
-    match command {
-        Array(arr) => match &arr[0] {
-            BulkString(string) => match string.to_uppercase().as_ref() {
-                "PING" => stream.write_all(b"+PONG\r\n").unwrap(),
-                "ECHO" => stream.write_all(&arr[1].to_resp()).unwrap(),
-                "SET" => execute_set(stream, arr, db),
-                "GET" => execute_get(stream, arr, db),
-                "INFO" => execute_info(stream, arr, db, server_info),
-                "REPLCONF" => execute_replconf(stream, arr),
-                "PSYNC" => execute_psync(stream, arr, server_info),
-                _ => stream.write_all(b"-ERR Unknown command\r\n").unwrap(),
-            },
-            _ => println!("Invalid command"),
-        },
-        _ => stream.write_all(b"-Err an error occured\r\n").unwrap(),
+fn write_buffer(stream: &mut TcpStream, buffer: &[u8]) -> Result<(), Error> {
+    stream.write_all(buffer).ok();
+    Ok(())
+}
+
+fn propagate_command(
+    server_info: &mut ServerInfo,
+    connections: &mut HashMap<Token, TcpStream>,
+    buffer: Vec<u8>,
+) -> Result<(), Error> {
+    let stream = match server_info.replica_token {
+        Some(ref token) => connections
+            .get_mut(token)
+            .ok_or_else(|| Error::new(NotFound, "no such connection"))?,
+        None => return Err(Error::new(NotFound, "no such replica token")),
+    };
+
+    match write_buffer(stream, &buffer) {
+        Ok(_) => Ok(()),
+        _ => panic!("replication failed"),
     }
 }
 
-fn execute_set(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
+fn process_command(
+    db: &mut Cache,
+    command: &Value,
+    client: &Token,
+    connections: &mut HashMap<Token, TcpStream>,
+    server_info: &mut ServerInfo,
+) -> Result<Option<String>, Error> {
+    let stream = connections
+        .get_mut(&client)
+        .ok_or_else(|| Error::new(NotFound, "no such connection"))?;
+
+    match command {
+        Array(arr) => match &arr[0] {
+            BulkString(string) => match string.to_uppercase().as_ref() {
+                "PING" => {
+                    write_buffer(stream, b"+PONG\r\n")?;
+                    Ok(None)
+                }
+                "ECHO" => {
+                    write_buffer(stream, &arr[1].to_resp())?;
+                    Ok(None)
+                }
+                "SET" => {
+                    execute_set(stream, arr, db)?;
+                    Ok(Some(string.to_owned()))
+                }
+                "GET" => {
+                    execute_get(stream, arr, db)?;
+                    Ok(None)
+                }
+                "INFO" => {
+                    execute_info(stream, arr, db, server_info)?;
+                    Ok(None)
+                }
+                "REPLCONF" => {
+                    execute_replconf(stream, arr)?;
+                    Ok(None)
+                }
+                "PSYNC" => {
+                    execute_psync(stream, arr, client, server_info)?;
+                    Ok(None)
+                }
+                _ => {
+                    write_buffer(stream, b"-ERR Unknown Command\r\n")?;
+                    Ok(None)
+                }
+            },
+            _ => {
+                write_buffer(stream, b"-Err Invalid Command\r\n")?;
+                Ok(None)
+            }
+        },
+        _ => {
+            write_buffer(stream, b"-Err an error occured\r\n")?;
+            Ok(None)
+        }
+    }
+}
+
+fn execute_set(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Result<(), Error> {
     let key = arr[1].to_resp();
     let value = arr[2].to_resp();
 
@@ -66,11 +153,11 @@ fn execute_set(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
                         let duration = Duration::from_millis(time);
                         let expiry_time = Instant::now() + duration;
                         match db.insert(key, value, Some(expiry_time)) {
-                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
+                            None => write_buffer(stream, b"+OK\r\n"),
                         }
                     }
-                    _ => println!("INVALID VALUE TYPE {:?}", &arr[3]),
+                    _ => panic!("INVALID VALUE TYPE {:?}", &arr[3]),
                 },
                 "EX" => match &arr[4] {
                     BulkString(x) => {
@@ -78,71 +165,74 @@ fn execute_set(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
                         let duration = Duration::from_secs(time);
                         let expiry_time = Instant::now() + duration;
                         match db.insert(key, value, Some(expiry_time)) {
-                            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-                            None => stream.write_all(b"+OK\r\n").unwrap(),
+                            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
+                            None => write_buffer(stream, b"+OK\r\n"),
                         }
                     }
-                    _ => println!("INVALID VALUE {:?}", &arr[3]),
+                    _ => panic!("INVALID VALUE {:?}", &arr[3]),
                 },
-                _ => println!("INVALID SUBCOMMAND {:?}", &arr[3]),
+                _ => panic!("INVALID SUBCOMMAND {:?}", &arr[3]),
             },
-            _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+            _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
         }
     } else {
         let res = db.insert(key, value, None);
 
         match res {
-            Some(_) => stream.write_all(b"+UPDATED\r\n").unwrap(),
-            None => stream.write_all(b"+OK\r\n").unwrap(),
+            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
+            None => write_buffer(stream, b"+OK\r\n"),
         }
     }
 }
 
-fn execute_get(mut stream: &TcpStream, arr: &Vec<Value>, db: &mut Cache) {
+fn execute_get(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Result<(), Error> {
     let key = arr[1].to_resp();
     let null_bulk_string = b"$-1\r\n".to_vec();
 
     let value = &db.get(&key).unwrap_or(null_bulk_string);
-    stream.write_all(value).unwrap()
+    write_buffer(stream, value)
 }
 
 fn execute_info(
-    mut stream: &TcpStream,
+    stream: &mut TcpStream,
     _arr: &Vec<Value>,
     _db: &mut Cache,
     server_info: &ServerInfo,
-) {
+) -> Result<(), Error> {
     let server_info = BulkString(format!(
         "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}",
         server_info.role, server_info.master_replid, server_info.master_repl_offset
     ));
 
-    stream.write_all(&server_info.to_resp()).unwrap()
+    write_buffer(stream, &server_info.to_resp())
 }
 
-fn execute_replconf(mut stream: &TcpStream, arr: &Vec<Value>) {
-
+fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>) -> Result<(), Error> {
     match &arr[1] {
         BulkString(string) => match string.to_lowercase().as_ref() {
             "listening-port" => match &arr[2] {
-                BulkString(_x) => stream.write_all(b"+OK\r\n").unwrap(),
-                _ => println!("INVALID listening port {:?}", &arr[2]),
+                BulkString(_x) => write_buffer(stream, b"+OK\r\n"),
+                _ => panic!("INVALID listening port {:?}", &arr[2]),
             },
             "capa" => match &arr[2] {
                 BulkString(x) => match x.to_lowercase().as_ref() {
-                    "psync2" => stream.write_all(b"+OK\r\n").unwrap(),
-                    _ => println!("INVALID CAPA COMMAND {:?}", &arr[2]),
+                    "psync2" => write_buffer(stream, b"+OK\r\n"),
+                    _ => panic!("INVALID CAPA COMMAND {:?}", &arr[2]),
                 },
-                _ => println!("INVALID VALUE {:?}", &arr[3]),
+                _ => panic!("INVALID VALUE {:?}", &arr[3]),
             },
-            _ => println!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
+            _ => panic!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
         },
-        _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
     }
 }
 
-fn execute_psync(mut stream: &TcpStream, arr: &Vec<Value>, server_info: &ServerInfo,) {
-
+fn execute_psync(
+    stream: &mut TcpStream,
+    arr: &Vec<Value>,
+    client: &Token,
+    server_info: &mut ServerInfo,
+) -> Result<(), Error> {
     match &arr[1] {
         BulkString(string) => match string.to_lowercase().as_ref() {
             "?" => match &arr[2] {
@@ -151,17 +241,19 @@ fn execute_psync(mut stream: &TcpStream, arr: &Vec<Value>, server_info: &ServerI
                         "FULLRESYNC {} {}",
                         server_info.master_replid, server_info.master_repl_offset
                     ));
-                    stream.write_all(&response.to_resp()).unwrap();
+                    write_buffer(stream, &response.to_resp())?;
 
                     let rdb_file = RDB::new().to_binary().unwrap();
                     let response = format!("${}\r\n", &rdb_file.len());
-                    stream.write_all(&response.as_bytes()).unwrap();
-                    stream.write_all(&rdb_file).unwrap();
-                },
-                _ => println!("INVALID listening port {:?}", &arr[2]),
+                    write_buffer(stream, &response.as_bytes())?;
+                    write_buffer(stream, &rdb_file)?;
+                    server_info.replica_token = Some(*client);
+                    Ok(())
+                }
+                _ => panic!("INVALID listening port {:?}", &arr[2]),
             },
-            _ => println!("INVALID PSYNC COMMAND {:?}", &arr[3]),
+            _ => panic!("INVALID PSYNC COMMAND {:?}", &arr[3]),
         },
-        _ => println!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
     }
 }

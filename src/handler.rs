@@ -68,17 +68,32 @@ fn propagate_command(
     connections: &mut HashMap<Token, TcpStream>,
     buffer: Vec<u8>,
 ) -> Result<(), Error> {
-    let stream = match server_info.replica_token {
-        Some(ref token) => connections
-            .get_mut(token)
-            .ok_or_else(|| Error::new(NotFound, "no such connection"))?,
-        None => return Err(Error::new(NotFound, "no such replica token")),
-    };
 
-    match write_buffer(stream, &buffer) {
-        Ok(_) => Ok(()),
-        _ => panic!("replication failed"),
+    let mut errors: Vec<Error> = Vec::new();
+
+    for replica in server_info.replicas.clone() {
+        let stream = match connections.get_mut(&replica) {
+            Some(s) => s,
+            None => {
+                errors.push(Error::new(NotFound, format!("connection {:?} not found", replica)));
+                continue;
+            },
+        };
+
+        match write_buffer(stream, &buffer) {
+            Ok(_) => continue,
+            _ => {
+                println!("replication to {:?} failed", replica);
+                continue
+            },
+        }
     }
+
+    if !errors.is_empty() {
+        println!("Error getting replicas connections: {:#?}", errors);
+    }
+
+    Ok(())
 }
 
 fn process_command(
@@ -247,7 +262,7 @@ fn execute_psync(
                     let response = format!("${}\r\n", &rdb_file.len());
                     write_buffer(stream, &response.as_bytes())?;
                     write_buffer(stream, &rdb_file)?;
-                    server_info.replica_token = Some(*client);
+                    server_info.replicas.insert(*client);
                     Ok(())
                 }
                 _ => panic!("INVALID listening port {:?}", &arr[2]),

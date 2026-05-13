@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{Read, Write};
 mod cache;
 mod event_loop;
@@ -20,7 +21,7 @@ struct ServerInfo {
     master_port: Option<String>,
     master_replid: String,
     master_repl_offset: String,
-    replica_token: Option<Token>,
+    replicas: HashSet<Token>,
 }
 #[derive(Parser)]
 struct Cli {
@@ -112,7 +113,7 @@ fn main() {
         master_port,
         master_replid,
         master_repl_offset,
-        replica_token: None,
+        replicas: HashSet::new(),
     };
 
     if server_info.role == "slave" {

@@ -8,16 +8,21 @@ use std::io::ErrorKind::WouldBlock;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+#[derive(Debug)]
 pub struct EventLoop {
     listener: TcpListener,
     poll: Poll,
     events: Events,
-    connections: HashMap<Token, TcpStream>,
+    pub(crate) connections: HashMap<Token, TcpStream>,
     server_info: ServerInfo,
 }
 
 impl EventLoop {
-    pub fn new(address: &str, server_info: ServerInfo) -> Self {
+    pub fn new(
+        address: &str,
+        server_info: ServerInfo,
+        mut connections: HashMap<Token, TcpStream>,
+    ) -> Self {
         let address = SocketAddr::from_str(address).unwrap();
         let listener = TcpListener::bind(address).unwrap();
         let poll = match Poll::new() {
@@ -26,7 +31,11 @@ impl EventLoop {
         };
 
         let events = Events::with_capacity(1024);
-        let connections = HashMap::new();
+        for (client, socket) in &mut connections {
+            poll.registry()
+                .register(socket, *client, Interest::READABLE | Interest::WRITABLE)
+                .expect("Connection registration failed");
+        }
 
         Self {
             listener,
@@ -42,7 +51,7 @@ impl EventLoop {
         F: Fn(&mut Cache, &Token, &mut HashMap<Token, TcpStream>, &mut ServerInfo),
     {
         const SERVER: Token = Token(0);
-        let mut next_token = 1;
+        let mut next_token = if self.connections.is_empty() { 1 } else { 2 };
 
         self.poll
             .registry()

@@ -79,20 +79,21 @@ fn main() {
         replicas: HashSet::new(),
     };
 
-    if server_info.role == "slave" {
-        match connect_master(&server_info) {
-            Ok(_) => {
-                println!("Successfully connected to master server")
-            }
-            Err(e) => {
-                println!("Failed to connect to master: {}", e);
-            }
+    let master_connection = match server_info.role.as_str() {
+        "slave" => match connect_master(&server_info) {
+            Ok(conn) => Some(conn),
+            Err(_e) => None,
         }
-    }
+        _ => None,
+    };
 
     let address = format!("127.0.0.1:{}", cli.port);
     let db = Cache::new();
-    let mut event_loop = EventLoop::new(&address, server_info);
+    let connections = match master_connection {
+        Some(conn) => HashMap::from([(Token(1), mio::net::TcpStream::from_std(conn))]),
+        None => HashMap::new(),
+    };
+    let mut event_loop = EventLoop::new(&address, server_info, connections);
 
     match event_loop.run(db, tcp_handler) {
         Ok(()) => println!("The event_loop ran successfully!"),

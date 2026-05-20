@@ -1,11 +1,13 @@
-use std::collections::HashSet;
-use std::io::{Read, Write};
+use std::collections::{HashMap, HashSet};
+
 mod cache;
 mod event_loop;
 mod handler;
+mod handshake;
 mod rdb;
 mod resp;
 
+use crate::handshake::handshake;
 use cache::Cache;
 use clap::Parser;
 use event_loop::EventLoop;
@@ -43,51 +45,12 @@ fn connect_master(server_info: &ServerInfo) -> Result<TcpStream, std::io::Error>
     };
     let addr = format!("{}:{}", host, port);
     let address = addr.to_socket_addrs()?.next().unwrap();
-    let mut stream = TcpStream::connect(address)?;
+    let mut stream: TcpStream = TcpStream::connect(address)?;
     stream.set_nonblocking(false)?;
 
-    // HANDSHAKE
-    handshake(&mut stream)?;
+    stream = handshake(stream)?;
+
     Ok(stream)
-}
-
-fn handshake(stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    stream.write_all(b"*1\r\n$4\r\nPING\r\n")?;
-    let response = read_response(stream)?;
-    if response != b"+PONG\r\n" {
-        println!("Invalid response {:?}", response);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Expected PONG",
-        ));
-    }
-    stream.write_all(b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n")?;
-    let response = read_response(stream)?;
-    if response != b"+OK\r\n" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "REPLCONF listening-port failed",
-        ));
-    }
-
-    stream.write_all(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")?;
-    let response = read_response(stream)?;
-    if response != b"+OK\r\n" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "REPLCONF capa failed",
-        ));
-    }
-
-    stream.write_all(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")?;
-
-    Ok(())
-}
-
-fn read_response(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
-    let mut buffer = [0; 512];
-    let n = stream.read(&mut buffer)?;
-    Ok(buffer[..n].to_vec())
 }
 
 fn main() {

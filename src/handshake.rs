@@ -3,7 +3,6 @@ use crate::resp::value::CRLF_OFFSET;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
-
 pub fn handshake(mut stream: TcpStream) -> Result<TcpStream, std::io::Error> {
     stream.write_all(b"*1\r\n$4\r\nPING\r\n")?;
     stream.flush()?;

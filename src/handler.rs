@@ -20,13 +20,33 @@ pub fn tcp_handler(
         Some(v) => v,
         None => return,
     };
-    let (_, parsed_command) = parser::parse(&buffer);
-    let _ = match process_command(db, &parsed_command, client, connections, server_info)
-        .expect("Error processing command")
-    {
-        Some(_) => propagate_command(server_info, connections, buffer),
-        None => return,
-    };
+    let mut bytes_offset = 0usize;
+    while bytes_offset < buffer.len() {
+        let (bytes_consumed, parsed_command) = parser::parse(buffer[bytes_offset..].to_vec());
+
+        match process_command(db, &parsed_command, client, connections, server_info) {
+            Ok(true) => {
+                if server_info.role == "master" {
+                    propagate_command(
+                        server_info,
+                        connections,
+                        buffer[bytes_offset..bytes_consumed].to_vec(),
+                    )
+                    .expect("Error while propagating command");
+                }
+            }
+            Ok(false) => {
+                bytes_offset += bytes_consumed;
+                continue;
+            }
+            Err(e) => {
+                println!("Error processing command: {}", e);
+                return;
+            }
+        };
+
+        bytes_offset += bytes_consumed;
+    }
 }
 
 fn read_buffer(client: &Token, connections: &mut HashMap<Token, TcpStream>) -> Option<Vec<u8>> {
@@ -59,7 +79,8 @@ fn read_buffer(client: &Token, connections: &mut HashMap<Token, TcpStream>) -> O
 }
 
 fn write_buffer(stream: &mut TcpStream, buffer: &[u8]) -> Result<(), Error> {
-    stream.write_all(buffer).ok();
+    stream.write_all(buffer)?;
+    stream.flush()?;
     Ok(())
 }
 
@@ -68,24 +89,26 @@ fn propagate_command(
     connections: &mut HashMap<Token, TcpStream>,
     buffer: Vec<u8>,
 ) -> Result<(), Error> {
-
     let mut errors: Vec<Error> = Vec::new();
 
     for replica in server_info.replicas.clone() {
         let stream = match connections.get_mut(&replica) {
             Some(s) => s,
             None => {
-                errors.push(Error::new(NotFound, format!("connection {:?} not found", replica)));
+                errors.push(Error::new(
+                    NotFound,
+                    format!("connection {:?} not found", replica),
+                ));
                 continue;
-            },
+            }
         };
 
         match write_buffer(stream, &buffer) {
             Ok(_) => continue,
             _ => {
                 println!("replication to {:?} failed", replica);
-                continue
-            },
+                continue;
+            }
         }
     }
 
@@ -102,7 +125,7 @@ fn process_command(
     client: &Token,
     connections: &mut HashMap<Token, TcpStream>,
     server_info: &mut ServerInfo,
-) -> Result<Option<String>, Error> {
+) -> Result<bool, Error> {
     let stream = connections
         .get_mut(&client)
         .ok_or_else(|| Error::new(NotFound, "no such connection"))?;
@@ -112,50 +135,53 @@ fn process_command(
             BulkString(string) => match string.to_uppercase().as_ref() {
                 "PING" => {
                     write_buffer(stream, b"+PONG\r\n")?;
-                    Ok(None)
+                    Ok(false)
                 }
                 "ECHO" => {
                     write_buffer(stream, &arr[1].to_resp())?;
-                    Ok(None)
+                    Ok(false)
                 }
                 "SET" => {
-                    execute_set(stream, arr, db)?;
-                    Ok(Some(string.to_owned()))
+                    let response = execute_set(arr, db);
+                    if server_info.role != "slave" {
+                        write_buffer(stream, &response)?;
+                    }
+                    Ok(true)
                 }
                 "GET" => {
                     execute_get(stream, arr, db)?;
-                    Ok(None)
+                    Ok(false)
                 }
                 "INFO" => {
                     execute_info(stream, arr, db, server_info)?;
-                    Ok(None)
+                    Ok(false)
                 }
                 "REPLCONF" => {
                     execute_replconf(stream, arr)?;
-                    Ok(None)
+                    Ok(false)
                 }
                 "PSYNC" => {
                     execute_psync(stream, arr, client, server_info)?;
-                    Ok(None)
+                    Ok(false)
                 }
                 _ => {
                     write_buffer(stream, b"-ERR Unknown Command\r\n")?;
-                    Ok(None)
+                    Ok(false)
                 }
             },
             _ => {
                 write_buffer(stream, b"-Err Invalid Command\r\n")?;
-                Ok(None)
+                Ok(false)
             }
         },
         _ => {
             write_buffer(stream, b"-Err an error occured\r\n")?;
-            Ok(None)
+            Ok(false)
         }
     }
 }
 
-fn execute_set(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Result<(), Error> {
+fn execute_set(arr: &Vec<Value>, db: &mut Cache) -> Vec<u8> {
     let key = arr[1].to_resp();
     let value = arr[2].to_resp();
 
@@ -168,8 +194,8 @@ fn execute_set(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Resu
                         let duration = Duration::from_millis(time);
                         let expiry_time = Instant::now() + duration;
                         match db.insert(key, value, Some(expiry_time)) {
-                            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
-                            None => write_buffer(stream, b"+OK\r\n"),
+                            Some(_) => b"+UPDATED\r\n".to_vec(),
+                            None => b"+OK\r\n".to_vec(),
                         }
                     }
                     _ => panic!("INVALID VALUE TYPE {:?}", &arr[3]),
@@ -180,8 +206,8 @@ fn execute_set(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Resu
                         let duration = Duration::from_secs(time);
                         let expiry_time = Instant::now() + duration;
                         match db.insert(key, value, Some(expiry_time)) {
-                            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
-                            None => write_buffer(stream, b"+OK\r\n"),
+                            Some(_) => b"+UPDATED\r\n".to_vec(),
+                            None => b"+OK\r\n".to_vec(),
                         }
                     }
                     _ => panic!("INVALID VALUE {:?}", &arr[3]),
@@ -194,8 +220,8 @@ fn execute_set(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Resu
         let res = db.insert(key, value, None);
 
         match res {
-            Some(_) => write_buffer(stream, b"+UPDATED\r\n"),
-            None => write_buffer(stream, b"+OK\r\n"),
+            Some(_) => b"+UPDATED\r\n".to_vec(),
+            None => b"+OK\r\n".to_vec(),
         }
     }
 }

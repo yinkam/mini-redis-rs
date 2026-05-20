@@ -83,7 +83,7 @@ fn main() {
         "slave" => match connect_master(&server_info) {
             Ok(conn) => Some(conn),
             Err(_e) => None,
-        }
+        },
         _ => None,
     };
 

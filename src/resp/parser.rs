@@ -21,11 +21,11 @@ pub fn parse(buffer: Vec<u8>) -> (usize, Value) {
     }
 }
 
-fn _find_crlf(buffer: &Vec<u8>) -> Option<usize> {
+pub(crate) fn _find_crlf(buffer: &Vec<u8>) -> Option<usize> {
     buffer.windows(2).position(|window| window == CRLF)
 }
 
-fn _parse_element_length(buffer: &Vec<u8>) -> (usize, usize) {
+pub(crate) fn _parse_element_length(buffer: &Vec<u8>) -> (usize, usize) {
     let mut bytes_consumed = match _find_crlf(&buffer) {
         Some(pos) => pos,
         None => buffer.len(),
@@ -37,7 +37,7 @@ fn _parse_element_length(buffer: &Vec<u8>) -> (usize, usize) {
         Ok(i) => {
             bytes_consumed += CRLF_OFFSET;
             (bytes_consumed, i)
-        },
+        }
         Err(_) => (bytes_consumed, count.parse::<usize>().unwrap()),
     }
 }
@@ -45,18 +45,13 @@ fn _parse_element_length(buffer: &Vec<u8>) -> (usize, usize) {
 fn _parse_simple_string(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Value) {
     let buffer = &buffer_[bytes_consumed..].to_vec();
 
-
     let pos = match _find_crlf(&buffer) {
         Some(pos) => pos,
         None => buffer.len(),
     };
     bytes_consumed += pos;
 
-    let parsed = Value::SimpleString(
-        std::str::from_utf8(&buffer[0..pos])
-            .unwrap()
-            .to_string(),
-    );
+    let parsed = Value::SimpleString(std::str::from_utf8(&buffer[0..pos]).unwrap().to_string());
     bytes_consumed += CRLF_OFFSET;
     (bytes_consumed, parsed)
 }
@@ -64,18 +59,13 @@ fn _parse_simple_string(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, 
 fn _parse_simple_error(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Value) {
     let buffer = &buffer_[bytes_consumed..].to_vec();
 
-
     let pos = match _find_crlf(&buffer) {
         Some(pos) => pos,
         None => buffer.len(),
     };
     bytes_consumed += pos;
 
-    let parsed = Value::SimpleError(
-        std::str::from_utf8(&buffer[0..pos])
-            .unwrap()
-            .to_string(),
-    );
+    let parsed = Value::SimpleError(std::str::from_utf8(&buffer[0..pos]).unwrap().to_string());
     bytes_consumed += CRLF_OFFSET;
     (bytes_consumed, parsed)
 }
@@ -96,7 +86,6 @@ fn _parse_bulk_string(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Va
     let (start, count) = _parse_element_length(&buffer);
 
     let end = start + count;
-
 
     let parsed = Value::BulkString(
         std::str::from_utf8(&buffer[start..end])
@@ -122,7 +111,7 @@ fn _parse_integer(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Value)
         Ok(i) => {
             bytes_consumed += CRLF_OFFSET;
             (bytes_consumed, Value::Integer(i))
-        },
+        }
         Err(_) => (
             bytes_consumed,
             Value::SimpleError("INVALID_INTEGER".to_string()),
@@ -141,7 +130,7 @@ fn _parse_array(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Value) {
     let mut arr = Vec::new();
 
     let (start, count) = _parse_element_length(&buffer);
-    bytes_consumed += start ;
+    bytes_consumed += start;
 
     let mut i = start;
     while arr.len() < count {
@@ -191,7 +180,7 @@ fn _parse_double(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Value) 
         Ok(i) => {
             bytes_consumed += pos + CRLF_OFFSET;
             (bytes_consumed, Value::Double(i))
-        },
+        }
         Err(_) => (bytes_consumed, Value::SimpleError("INVALID".to_string())),
     }
 }
@@ -210,7 +199,7 @@ fn _parse_big_number(mut bytes_consumed: usize, buffer_: Vec<u8>) -> (usize, Val
         Ok(i) => {
             bytes_consumed += pos + CRLF_OFFSET;
             (bytes_consumed, Value::BigNumber(i))
-        },
+        }
         Err(_) => (bytes_consumed, Value::SimpleError("INVALID".to_string())),
     }
 }
@@ -407,7 +396,7 @@ mod tests {
     fn test_null() {
         let input = b"_\r\n";
         let (bytes, result) = parse(input.to_vec());
-            assert_eq!(bytes, input.len());
+        assert_eq!(bytes, input.len());
         match result {
             n => assert_eq!(n, Value::Null),
         }
@@ -557,7 +546,7 @@ mod tests {
     fn test_bulk_error() {
         let input = b"!21\r\nSYNTAX invalid syntax\r\n";
         let (bytes, result) = parse(input.to_vec());
-            assert_eq!(bytes, input.len());
+        assert_eq!(bytes, input.len());
         match result {
             Value::BulkError(s) => assert_eq!(s, "SYNTAX invalid syntax"),
             _ => panic!("Wrong type"),

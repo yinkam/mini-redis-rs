@@ -262,6 +262,13 @@ fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>) -> Result<(), Erro
                 },
                 _ => panic!("INVALID VALUE {:?}", &arr[3]),
             },
+            "getack" => match &arr[2] {
+                BulkString(x) => match x.to_lowercase().as_ref() {
+                    "*" => write_buffer(stream, b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"),
+                    _ => panic!("INVALID GETACK COMMAND {:?}", &arr[2]),
+                },
+                _ => panic!("INVALID VALUE {:?}", &arr[3]),
+            },
             _ => panic!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
         },
         _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),

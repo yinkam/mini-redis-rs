@@ -47,6 +47,9 @@ pub fn tcp_handler(
 
         bytes_offset += bytes_consumed;
     }
+    if server_info.role == "slave" {
+        server_info.master_repl_offset += bytes_offset;
+    }
 }
 
 fn read_buffer(client: &Token, connections: &mut HashMap<Token, TcpStream>) -> Option<Vec<u8>> {
@@ -134,7 +137,10 @@ fn process_command(
         Array(arr) => match &arr[0] {
             BulkString(string) => match string.to_uppercase().as_ref() {
                 "PING" => {
-                    write_buffer(stream, b"+PONG\r\n")?;
+                    let response = b"+PONG\r\n";
+                    if server_info.role != "slave" {
+                        write_buffer(stream, response)?;
+                    }
                     Ok(false)
                 }
                 "ECHO" => {
@@ -157,7 +163,7 @@ fn process_command(
                     Ok(false)
                 }
                 "REPLCONF" => {
-                    execute_replconf(stream, arr)?;
+                    execute_replconf(stream, arr, server_info)?;
                     Ok(false)
                 }
                 "PSYNC" => {
@@ -248,7 +254,7 @@ fn execute_info(
     write_buffer(stream, &server_info.to_resp())
 }
 
-fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>) -> Result<(), Error> {
+fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>, server_info: &ServerInfo) -> Result<(), Error> {
     match &arr[1] {
         BulkString(string) => match string.to_lowercase().as_ref() {
             "listening-port" => match &arr[2] {
@@ -264,7 +270,14 @@ fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>) -> Result<(), Erro
             },
             "getack" => match &arr[2] {
                 BulkString(x) => match x.to_lowercase().as_ref() {
-                    "*" => write_buffer(stream, b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"),
+                    "*" => {
+                        let response = Array(vec![
+                            BulkString("REPLCONF".to_string()),
+                            BulkString("ACK".to_string()),
+                            BulkString(format!("{}", server_info.master_repl_offset as i64)),
+                        ]);
+                        write_buffer(stream, &*response.to_resp())
+                    },
                     _ => panic!("INVALID GETACK COMMAND {:?}", &arr[2]),
                 },
                 _ => panic!("INVALID VALUE {:?}", &arr[3]),

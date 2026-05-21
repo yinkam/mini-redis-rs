@@ -22,7 +22,7 @@ struct ServerInfo {
     master_host: Option<String>,
     master_port: Option<String>,
     master_replid: String,
-    master_repl_offset: String,
+    master_repl_offset: usize,
     replicas: HashSet<Token>,
 }
 #[derive(Parser)]
@@ -69,7 +69,7 @@ fn main() {
         None => "master".to_string(),
     };
     let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string();
-    let master_repl_offset = "0".to_string();
+    let master_repl_offset = 0usize;
 
     let server_info = ServerInfo {
         role,

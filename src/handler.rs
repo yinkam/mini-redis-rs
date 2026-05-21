@@ -171,7 +171,7 @@ fn process_command(
                     Ok(false)
                 }
                 "WAIT" => {
-                    execute_wait(stream)?;
+                    execute_wait(stream, server_info)?;
                     Ok(false)
                 }
                 _ => {
@@ -323,8 +323,9 @@ fn execute_psync(
     }
 }
 
-fn execute_wait(stream: &mut TcpStream) -> Result<(), Error> {
-    let response = Integer(0);
+fn execute_wait(stream: &mut TcpStream, server_info: &ServerInfo) -> Result<(), Error> {
+
+    let response = Integer(server_info.replicas.len() as i64);
     write_buffer(stream, &response.to_resp())?;
     Ok(())
 }

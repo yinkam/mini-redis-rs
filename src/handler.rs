@@ -170,6 +170,10 @@ fn process_command(
                     execute_psync(stream, arr, client, server_info)?;
                     Ok(false)
                 }
+                "WAIT" => {
+                    execute_wait(stream)?;
+                    Ok(false)
+                }
                 _ => {
                     write_buffer(stream, b"-ERR Unknown Command\r\n")?;
                     Ok(false)
@@ -317,4 +321,10 @@ fn execute_psync(
         },
         _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
     }
+}
+
+fn execute_wait(stream: &mut TcpStream) -> Result<(), Error> {
+    let response = Integer(0);
+    write_buffer(stream, &response.to_resp())?;
+    Ok(())
 }

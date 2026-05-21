@@ -51,7 +51,7 @@ pub fn tcp_handler(
 
 fn read_buffer(client: &Token, connections: &mut HashMap<Token, TcpStream>) -> Option<Vec<u8>> {
     let stream = match connections.get_mut(&client) {
-        Some(socket) => socket,
+        Some(conn) => conn,
         None => {
             println!("Error getting stream");
             return None;

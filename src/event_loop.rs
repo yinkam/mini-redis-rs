@@ -31,9 +31,9 @@ impl EventLoop {
         };
 
         let events = Events::with_capacity(1024);
-        for (client, socket) in &mut connections {
+        for (client, conn) in &mut connections {
             poll.registry()
-                .register(socket, *client, Interest::READABLE | Interest::WRITABLE)
+                .register(conn, *client, Interest::READABLE | Interest::WRITABLE)
                 .expect("Connection registration failed");
         }
 
@@ -64,17 +64,17 @@ impl EventLoop {
                 match event.token() {
                     SERVER => loop {
                         match self.listener.accept() {
-                            Ok((mut socket, addr)) => {
+                            Ok((mut conn, addr)) => {
                                 println!("new connection from {}", addr);
                                 let client = Token(next_token);
                                 next_token += 1;
 
                                 self.poll.registry().register(
-                                    &mut socket,
+                                    &mut conn,
                                     client,
                                     Interest::READABLE | Interest::WRITABLE,
                                 )?;
-                                self.connections.insert(client, socket);
+                                self.connections.insert(client, conn);
                             }
                             Err(ref err) if err.kind() == WouldBlock => break,
                             Err(err) => return Err(err),
@@ -82,7 +82,7 @@ impl EventLoop {
                     },
                     client => {
                         match self.connections.get_mut(&client) {
-                            Some(socket) => socket,
+                            Some(conn) => conn,
                             None => continue,
                         };
                         handler(

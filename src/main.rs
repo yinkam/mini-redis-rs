@@ -46,9 +46,10 @@ fn connect_master(server_info: &ServerInfo) -> Result<TcpStream, std::io::Error>
     let addr = format!("{}:{}", host, port);
     let address = addr.to_socket_addrs()?.next().unwrap();
     let mut stream: TcpStream = TcpStream::connect(address)?;
-    stream.set_nonblocking(false)?;
 
+    stream.set_nonblocking(false)?;
     stream = handshake(stream)?;
+    stream.set_nonblocking(true)?;
 
     Ok(stream)
 }

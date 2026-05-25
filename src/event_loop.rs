@@ -1,12 +1,14 @@
 use crate::cache::Cache;
-use crate::ServerInfo;
+use crate::resp::value::Value::Integer;
+use crate::{ServerInfo, WaitState};
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
-use std::io::Error;
 use std::io::ErrorKind::WouldBlock;
+use std::io::{Error, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct EventLoop {
@@ -58,7 +60,13 @@ impl EventLoop {
             .register(&mut self.listener, SERVER, Interest::READABLE)?;
 
         loop {
-            self.poll.poll(&mut self.events, None)?;
+            let timeout = self.get_timeout();
+
+            self.poll.poll(&mut self.events, timeout)?;
+
+            if let Some(x) = &self.server_info.waiting.clone() {
+                self.send_wait_timeout(x)
+            }
 
             for event in self.events.iter() {
                 match event.token() {
@@ -94,6 +102,31 @@ impl EventLoop {
                     }
                 }
             }
+        }
+    }
+
+    fn get_timeout(&self) -> Option<Duration> {
+        match &self.server_info.waiting {
+            Some(state) => {
+                let elapsed = state.start_time.elapsed();
+                if elapsed >= state.timeout {
+                    Some(Duration::from_millis(0))
+                } else {
+                    Some(state.timeout - elapsed)
+                }
+            }
+            None => None,
+        }
+    }
+
+    fn send_wait_timeout(&mut self, state: &WaitState) {
+        if state.start_time.elapsed() > state.timeout {
+            let response = Integer(state.acks_received as i64);
+            let client = &mut self.connections.get_mut(&state.client).unwrap();
+            client
+                .write_all(&response.to_resp().to_vec())
+                .expect("Error: could not respond to WAIT after timeout");
+            self.server_info.waiting = None;
         }
     }
 }

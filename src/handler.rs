@@ -2,7 +2,7 @@ use crate::cache::Cache;
 use crate::rdb::RDB;
 use crate::resp::value::Value;
 use crate::resp::{parser, value::Value::*};
-use crate::ServerInfo;
+use crate::{ServerInfo, WaitState};
 use mio::net::TcpStream;
 use mio::Token;
 use std::collections::HashMap;
@@ -33,6 +33,7 @@ pub fn tcp_handler(
                         buffer[bytes_offset..bytes_consumed].to_vec(),
                     )
                     .expect("Error while propagating command");
+                    server_info.master_repl_offset += bytes_consumed;
                 }
             }
             Ok(false) => {
@@ -94,7 +95,7 @@ fn propagate_command(
 ) -> Result<(), Error> {
     let mut errors: Vec<Error> = Vec::new();
 
-    for replica in server_info.replicas.clone() {
+    for (replica, _offset) in server_info.replicas.clone() {
         let stream = match connections.get_mut(&replica) {
             Some(s) => s,
             None => {
@@ -122,6 +123,32 @@ fn propagate_command(
     Ok(())
 }
 
+fn get_connections<'a>(
+    client: &Token,
+    server_info: &ServerInfo,
+    connections: &'a mut HashMap<Token, TcpStream>,
+) -> (
+    Option<&'a mut TcpStream>,
+    Option<&'a mut TcpStream>,
+    Vec<&'a mut TcpStream>,
+) {
+    let mut client_connection = None;
+    let mut waiting_connection = None;
+    let mut replica_connections = Vec::new();
+    for (token, conn) in connections {
+        if client == token {
+            client_connection = Some(conn);
+        } else if server_info.replicas.contains_key(&token) {
+            replica_connections.push(conn);
+        } else if server_info.waiting.is_some() {
+            if &server_info.waiting.clone().unwrap().client == token {
+                waiting_connection = Some(conn);
+            }
+        }
+    }
+    (client_connection, waiting_connection, replica_connections)
+}
+
 fn process_command(
     db: &mut Cache,
     command: &Value,
@@ -129,9 +156,12 @@ fn process_command(
     connections: &mut HashMap<Token, TcpStream>,
     server_info: &mut ServerInfo,
 ) -> Result<bool, Error> {
-    let stream = connections
-        .get_mut(&client)
-        .ok_or_else(|| Error::new(NotFound, "no such connection"))?;
+    let (client_conn, waiting_conn, replicas) = get_connections(client, server_info, connections);
+
+    let stream = match client_conn {
+        Some(c) => c,
+        None => return Ok(false),
+    };
 
     match command {
         Array(arr) => match &arr[0] {
@@ -162,16 +192,28 @@ fn process_command(
                     execute_info(stream, arr, db, server_info)?;
                     Ok(false)
                 }
-                "REPLCONF" => {
-                    execute_replconf(stream, arr, server_info)?;
-                    Ok(false)
-                }
+                "REPLCONF" => match execute_replconf(client, arr, server_info) {
+                    Ok(v) => match v {
+                        Some(msg) => {
+                            if arr[1] == BulkString("ACK".to_string()) {
+                                write_buffer(waiting_conn.unwrap(), &msg)?;
+                                server_info.waiting = None;
+                                Ok(false)
+                            } else {
+                                write_buffer(stream, &msg)?;
+                                Ok(false)
+                            }
+                        }
+                        None => Ok(false),
+                    },
+                    Err(err) => Err(err),
+                },
                 "PSYNC" => {
                     execute_psync(stream, arr, client, server_info)?;
                     Ok(false)
                 }
                 "WAIT" => {
-                    execute_wait(stream, server_info)?;
+                    execute_wait(stream, client, arr, replicas, server_info)?;
                     Ok(false)
                 }
                 _ => {
@@ -258,19 +300,23 @@ fn execute_info(
     write_buffer(stream, &server_info.to_resp())
 }
 
-fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>, server_info: &ServerInfo) -> Result<(), Error> {
+fn execute_replconf(
+    client: &Token,
+    arr: &Vec<Value>,
+    server_info: &mut ServerInfo,
+) -> Result<Option<Vec<u8>>, Error> {
     match &arr[1] {
         BulkString(string) => match string.to_lowercase().as_ref() {
             "listening-port" => match &arr[2] {
-                BulkString(_x) => write_buffer(stream, b"+OK\r\n"),
+                BulkString(_x) => Ok(Some(b"+OK\r\n".to_vec())),
                 _ => panic!("INVALID listening port {:?}", &arr[2]),
             },
             "capa" => match &arr[2] {
                 BulkString(x) => match x.to_lowercase().as_ref() {
-                    "psync2" => write_buffer(stream, b"+OK\r\n"),
+                    "psync2" => Ok(Some(b"+OK\r\n".to_vec())),
                     _ => panic!("INVALID CAPA COMMAND {:?}", &arr[2]),
                 },
-                _ => panic!("INVALID VALUE {:?}", &arr[3]),
+                _ => panic!("INVALID VALUE {:?}", &arr[2]),
             },
             "getack" => match &arr[2] {
                 BulkString(x) => match x.to_lowercase().as_ref() {
@@ -280,15 +326,40 @@ fn execute_replconf(stream: &mut TcpStream, arr: &Vec<Value>, server_info: &Serv
                             BulkString("ACK".to_string()),
                             BulkString(format!("{}", server_info.master_repl_offset as i64)),
                         ]);
-                        write_buffer(stream, &*response.to_resp())
-                    },
+                        Ok(Some(response.to_resp().to_vec()))
+                    }
                     _ => panic!("INVALID GETACK COMMAND {:?}", &arr[2]),
                 },
-                _ => panic!("INVALID VALUE {:?}", &arr[3]),
+                _ => panic!("INVALID VALUE {:?}", &arr[2]),
             },
-            _ => panic!("INVALID REPLCONF COMMAND {:?}", &arr[3]),
+            "ack" => match &arr[2] {
+                BulkString(x) => {
+                    let offset = x.parse::<usize>().unwrap();
+
+                    match server_info.waiting {
+                        Some(ref mut state) => {
+                            server_info.replicas.insert(*client, offset);
+                            state.acks_received += 1;
+                            if state.acks_received >= state.min_replicas
+                                || state.start_time.elapsed() > state.timeout
+                            {
+                                let response = Integer(state.acks_received as i64);
+                                Ok(Some(response.to_resp().to_vec()))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        None => {
+                            server_info.replicas.insert(*client, offset);
+                            Ok(None)
+                        }
+                    }
+                }
+                _ => panic!("INVALID REPLICA OFFSET {:?}", &arr[2]),
+            },
+            _ => panic!("INVALID REPLCONF COMMAND {:?}", &arr[1]),
         },
-        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[1]),
     }
 }
 
@@ -312,7 +383,7 @@ fn execute_psync(
                     let response = format!("${}\r\n", &rdb_file.len());
                     write_buffer(stream, &response.as_bytes())?;
                     write_buffer(stream, &rdb_file)?;
-                    server_info.replicas.insert(*client);
+                    server_info.replicas.insert(*client, 0usize);
                     Ok(())
                 }
                 _ => panic!("INVALID listening port {:?}", &arr[2]),
@@ -323,9 +394,40 @@ fn execute_psync(
     }
 }
 
-fn execute_wait(stream: &mut TcpStream, server_info: &ServerInfo) -> Result<(), Error> {
+fn execute_wait(
+    stream: &mut TcpStream,
+    client: &Token,
+    arr: &Vec<Value>,
+    mut replicas: Vec<&mut TcpStream>,
+    server_info: &mut ServerInfo,
+) -> Result<(), Error> {
+    let min_replicas = match &arr[1] {
+        BulkString(x) => x.parse::<usize>().unwrap(),
+        _ => 0,
+    };
 
-    let response = Integer(server_info.replicas.len() as i64);
-    write_buffer(stream, &response.to_resp())?;
+    let timeout = match &arr[2] {
+        BulkString(x) => Duration::from_millis(x.parse::<u64>().unwrap()),
+        _ => Duration::from_millis(0),
+    };
+
+    if server_info.master_repl_offset == 0 {
+        let response = Integer(server_info.replicas.len() as i64);
+        write_buffer(stream, &response.to_resp())?;
+    } else {
+        for replica in replicas.iter_mut() {
+            write_buffer(replica, b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n")?;
+        }
+
+        let start_time = Instant::now();
+
+        server_info.waiting = Some(WaitState {
+            client: *client,
+            min_replicas,
+            timeout,
+            start_time,
+            acks_received: 0,
+        });
+    }
     Ok(())
 }

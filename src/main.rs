@@ -15,7 +15,16 @@ use handler::tcp_handler;
 use mio::Token;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
+use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone)]
+struct WaitState {
+    client: Token,
+    min_replicas: usize,
+    timeout: Duration,
+    start_time: Instant,
+    acks_received: usize,
+}
 #[derive(Debug)]
 struct ServerInfo {
     role: String,
@@ -23,7 +32,8 @@ struct ServerInfo {
     master_port: Option<String>,
     master_replid: String,
     master_repl_offset: usize,
-    replicas: HashSet<Token>,
+    replicas: HashMap<Token, usize>,
+    waiting: Option<WaitState>,
 }
 #[derive(Parser)]
 struct Cli {
@@ -77,7 +87,8 @@ fn main() {
         master_port,
         master_replid,
         master_repl_offset,
-        replicas: HashSet::new(),
+        replicas: HashMap::new(),
+        waiting: None,
     };
 
     let master_connection = match server_info.role.as_str() {

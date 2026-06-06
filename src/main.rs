@@ -1,13 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 mod cache;
 mod event_loop;
 mod handler;
-mod handshake;
-mod rdb;
 mod resp;
+mod replication;
+mod persistence;
 
-use crate::handshake::handshake;
 use cache::Cache;
 use clap::Parser;
 use event_loop::EventLoop;
@@ -16,6 +15,7 @@ use mio::Token;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::time::{Duration, Instant};
+use crate::replication::handshake::handshake;
 
 #[derive(Debug, Clone)]
 struct WaitState {

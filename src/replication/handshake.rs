@@ -43,8 +43,8 @@ fn execute_psync(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     let mut buffer = [0; 512];
     let mut full_buffer = Vec::new();
     let mut offset = 0;
-    let mut rdb_file = None;
-    while rdb_file == None {
+    let mut _rdb_file = None;
+    while _rdb_file == None {
         let n = stream.read(&mut buffer[0..])?;
         full_buffer.extend_from_slice(&buffer[..n]);
 
@@ -62,7 +62,7 @@ fn execute_psync(stream: &mut TcpStream) -> Result<(), std::io::Error> {
                     parser::_parse_element_length(&full_buffer[offset + 1..].to_vec());
                 if full_buffer[offset + bytes..].len() >= count {
                     let response = full_buffer[offset..].to_vec();
-                    rdb_file = Some(response);
+                    _rdb_file = Some(response);
                     break;
                 }
                 continue;

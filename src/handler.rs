@@ -1,5 +1,4 @@
 use crate::cache::Cache;
-use crate::rdb::RDB;
 use crate::resp::value::Value;
 use crate::resp::{parser, value::Value::*};
 use crate::{ServerInfo, WaitState};
@@ -9,6 +8,14 @@ use std::collections::HashMap;
 use std::io::ErrorKind::{NotFound, WouldBlock};
 use std::io::{Error, Read, Write};
 use std::time::{Duration, Instant};
+use crate::persistence::rdb::RDB;
+
+// TODO: Refactor - handler currently
+// owns too much responsibility.
+// Split after persistence is complete:
+// - commands.rs (command execution)
+// - replication.rs (propagation)
+// - persistence.rs (AOF/RDB)
 
 pub fn tcp_handler(
     db: &mut Cache,

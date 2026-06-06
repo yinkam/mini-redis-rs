@@ -17,6 +17,12 @@ use std::net::ToSocketAddrs;
 use std::time::{Duration, Instant};
 use crate::replication::handshake::handshake;
 
+#[derive(Debug)]
+struct Config {
+    dir: String,
+    dbfilename: String,
+}
+
 #[derive(Debug, Clone)]
 struct WaitState {
     client: Token,
@@ -34,6 +40,7 @@ struct ServerInfo {
     master_repl_offset: usize,
     replicas: HashMap<Token, usize>,
     waiting: Option<WaitState>,
+    config: Config,
 }
 #[derive(Parser)]
 struct Cli {
@@ -42,6 +49,12 @@ struct Cli {
 
     #[clap(long = "replicaof")]
     master_addr: Option<String>,
+
+    #[arg(long = "dir", default_value = "/tmp/redis")]
+    dir: String,
+
+    #[arg(long = "dbfilename", default_value = "dump.rdb")]
+    dbfilename: String,
 }
 
 fn connect_master(server_info: &ServerInfo) -> Result<TcpStream, std::io::Error> {
@@ -80,6 +93,10 @@ fn main() {
     };
     let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string();
     let master_repl_offset = 0usize;
+    let config = Config {
+        dir: cli.dir,
+        dbfilename: cli.dbfilename,
+    };
 
     let server_info = ServerInfo {
         role,
@@ -89,6 +106,7 @@ fn main() {
         master_repl_offset,
         replicas: HashMap::new(),
         waiting: None,
+        config,
     };
 
     let master_connection = match server_info.role.as_str() {

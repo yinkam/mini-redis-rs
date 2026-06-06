@@ -223,6 +223,10 @@ fn process_command(
                     execute_wait(stream, client, arr, replicas, server_info)?;
                     Ok(false)
                 }
+                "CONFIG" => {
+                    execute_config(stream, arr, server_info)?;
+                    Ok(false)
+                }
                 _ => {
                     write_buffer(stream, b"-ERR Unknown Command\r\n")?;
                     Ok(false)
@@ -437,4 +441,34 @@ fn execute_wait(
         });
     }
     Ok(())
+}
+
+fn execute_config(stream: &mut TcpStream, arr: &Vec<Value>, server_info: &ServerInfo) -> Result<(), Error> {
+
+    match &arr[1] {
+        BulkString(string) => match string.to_uppercase().as_ref() {
+            "GET" => match &arr[2] {
+                BulkString(x) => match x.to_lowercase().as_ref() {
+                    "dir" => {
+                        let response = Array(vec![
+                            BulkString("dir".to_string()),
+                            BulkString(server_info.config.dir.clone()),
+                        ]);
+                        write_buffer(stream, &response.to_resp())
+                    }
+                    "dbfilename" => {
+                        let response = Array(vec![
+                            BulkString("dbfilename".to_string()),
+                            BulkString(server_info.config.dbfilename.clone()),
+                        ]);
+                        write_buffer(stream, &response.to_resp())
+                    }
+                    _ => panic!("Config not supported"),
+                }
+                _ => panic!("INVALID VALUE TYPE {:?}", &arr[3]),
+            }
+            _ => panic!("INVALID SUBCOMMAND {:?}", &arr[3]),
+        },
+        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+    }
 }

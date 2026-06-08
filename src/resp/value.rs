@@ -110,4 +110,10 @@ impl Value {
             }
         }
     }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Value::BulkString(s) => s.to_string().into_bytes(),
+            _ => panic!("Not a BulkString"),
+        }
+    }
 }

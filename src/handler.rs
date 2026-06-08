@@ -245,8 +245,8 @@ fn process_command(
 }
 
 fn execute_set(arr: &Vec<Value>, db: &mut Cache) -> Vec<u8> {
-    let key = arr[1].to_resp();
-    let value = arr[2].to_resp();
+    let key = arr[1].to_bytes();
+    let value = arr[2].to_bytes();
 
     if arr.len() > 3 {
         match &arr[3] {
@@ -290,11 +290,14 @@ fn execute_set(arr: &Vec<Value>, db: &mut Cache) -> Vec<u8> {
 }
 
 fn execute_get(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Result<(), Error> {
-    let key = arr[1].to_resp();
+    let key = &arr[1];
     let null_bulk_string = b"$-1\r\n".to_vec();
 
-    let value = &db.get(&key).unwrap_or(null_bulk_string);
-    write_buffer(stream, value)
+    let value = match &db.get(&key.to_bytes()) {
+        Some(v) => BulkString(String::from_utf8(v.to_vec()).expect("Invalid UTF-8")).to_resp(),
+        None => null_bulk_string,
+    };
+    write_buffer(stream, &value)
 }
 
 fn execute_info(

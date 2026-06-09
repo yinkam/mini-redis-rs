@@ -32,6 +32,10 @@ impl Cache {
         }
         None
     }
+
+    pub fn keys(&self) -> Vec<Vec<u8>> {
+        self.data.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

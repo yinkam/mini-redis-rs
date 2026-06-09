@@ -227,6 +227,10 @@ fn process_command(
                     execute_config(stream, arr, server_info)?;
                     Ok(false)
                 }
+                "KEYS" => {
+                    execute_keys(stream, arr, db)?;
+                    Ok(false)
+                }
                 _ => {
                     write_buffer(stream, b"-ERR Unknown Command\r\n")?;
                     Ok(false)
@@ -469,6 +473,27 @@ fn execute_config(stream: &mut TcpStream, arr: &Vec<Value>, server_info: &Server
                     _ => panic!("Config not supported"),
                 }
                 _ => panic!("INVALID VALUE TYPE {:?}", &arr[3]),
+            }
+            _ => panic!("INVALID SUBCOMMAND {:?}", &arr[3]),
+        },
+        _ => panic!("INVALID COMMAND STRUCTURE {:?}", &arr[2]),
+    }
+}
+
+fn execute_keys(stream: &mut TcpStream, arr: &Vec<Value>, db: &mut Cache) -> Result<(), Error> {
+
+    match &arr[1] {
+        BulkString(string) => match string.to_uppercase().as_ref() {
+            "*" => {
+                let mut keys = Vec::new();
+                for key in db.keys().iter_mut() {
+                    let string = String::from_utf8(key.to_vec()).unwrap();
+                    keys.push(BulkString(string))
+                };
+                let response =  Array(keys).to_resp();
+                println!("{:?}", String::from_utf8(response.to_vec()));
+                write_buffer(stream, &*response)
+
             }
             _ => panic!("INVALID SUBCOMMAND {:?}", &arr[3]),
         },

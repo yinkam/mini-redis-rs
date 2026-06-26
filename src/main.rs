@@ -50,10 +50,10 @@ struct Cli {
     #[clap(long = "replicaof")]
     master_addr: Option<String>,
 
-    #[arg(long = "dir", default_value = "/tmp/redis")]
+    #[arg(long = "dir")]
     dir: String,
 
-    #[arg(long = "dbfilename", default_value = "dump.rdb")]
+    #[arg(long = "dbfilename")]
     dbfilename: String,
 }
 

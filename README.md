@@ -1,184 +1,126 @@
-# Redis Clone in Rust
+# Mini-Redis — Redis Clone in Rust
 
-A lightweight, event-driven Redis implementation in Rust featuring non-blocking I/O and RESP protocol parsing. Built as part of the [CodeCrafters "Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis) to explore systems programming and distributed systems concepts.
+A Redis-compatible distributed store built from first principles in Rust. Implements the RESP protocol, a non-blocking event loop with `mio`, and leader-follower replication including multi-replica propagation. Built through the [CodeCrafters Redis challenge](https://codecrafters.io/challenges/redis).
 
-## Features
+## What It Does
 
-- **Event-driven I/O with mio**: Single-threaded, non-blocking architecture using Rust's `mio` library for efficient connection handling
-- **Core Redis commands**:
-  - `PING` - Server health check
-  - `ECHO` - Echo back messages
-  - `SET` - Store key-value pairs with optional expiry (`PX` for milliseconds, `EX` for seconds)
-  - `GET` - Retrieve values with automatic expiry handling
-- **RESP Protocol**: Full implementation of Redis Serialization Protocol (RESP) parser supporting multiple data types (simple strings, bulk strings, arrays, integers, booleans, doubles, big numbers, null values, and errors)
-- **Expiration Support**: Time-based key expiry with automatic cleanup on access
-- **Custom CLI**: Configurable port binding using `clap`
+- **RESP protocol parser** — Byte-level, sliding-window parser. Handles all RESP data types: simple strings, bulk strings, arrays, integers, booleans, doubles, big numbers, nulls, and errors. Serializes responses back to RESP format.
+- **Event-driven I/O with `mio`** — Single-threaded non-blocking architecture. Handles multiple concurrent clients without thread-per-connection overhead. Same model as Redis itself.
+- **Core commands** — `PING`, `ECHO`, `SET`/`GET` with `PX`/`EX` expiry, `KEYS`, `CONFIG`, `INFO`, `WAIT`
+- **Replication commands** — `REPLCONF`, `PSYNC` (full resync handshake)
+- **Leader-follower replication** — Full handshake protocol, RDB snapshot transfer to new replicas, command propagation to multiple replicas, `master_repl_offset` tracking on both sides, `WAIT` with poll timeout
 
 ## Architecture
 
-### Event Loop Design
+### Event Loop
 
-The application uses a single-threaded event loop powered by `mio` for asynchronous I/O operations:
+Single-threaded event loop using `mio::Poll`. All socket operations are non-blocking — reads return `WouldBlock` when no data is available, writes buffer and retry. No `Arc<Mutex<>>` needed: single-threaded means there's nothing to share across threads, so there's nothing to synchronize.
 
-```text
-                    Event Loop (mio::Poll)
-                    
-    Server Listener ──register──> Poll Registry
-       (Token 0)                       │
-                                       │ notify
-                                       ▼
-                                  Events Channel
-                                  │           │
-                   New Connection?│           │ Readable?
-                                  ▼           ▼
-                           Accept Client   Handler
-                            (Token n)       (TCP I/O)
-                                  │           │
-                          register│           ▼
-                                  │         Cache
-                                  │       (HashMap)
-                                  │           │
-                                  └───────────┘
-                                    loop back
+```
+  ┌──────────────────────────────────┐
+  │          mio::Poll.poll()        │
+  └─────────────────┬────────────────┘
+                    │ OS notifies readiness
+                    ▼
+             ┌─────────────┐
+             │ Events loop │
+             └──────┬──────┘
+                    │
+         ┌──────────┴──────────┐
+         │                     │
+    Token(0)?             Token(n)?
+   New connection         Data ready
+         │                     │
+         ▼                     ▼
+  Accept + register       tcp_handler
+   new Token(n)               │
+                         RESP parser
+                              │
+                       command processing
+                       (cache reads/writes)
+                              │
+                         Write response
+                              │
+                    ◄─────────┘
+               loop back
+          (WouldBlock → register
+           interest + continue)
 ```
 
-**Flow:**
+The critical constraint: `mio` requires non-blocking streams. Blocking anywhere in the event loop stalls all clients. This shaped every design decision.
 
-1. **Server Registration**: `TcpListener` registered with `Poll::Registry` using `Token(0)`
-2. **Event Channel**: `Events` buffer receives readiness notifications from the OS
-3. **Client Registration**: New clients registered via `Poll::Registry` with unique `Token(n)` where n > 0
-4. **Non-blocking I/O**: All socket operations return immediately, preventing thread blocking
+### RESP Parsing
 
-### RESP Protocol Parsing
+Sliding-window byte parser that handles TCP's non-determinism — messages can arrive split across multiple reads, or multiple messages can arrive in a single read. The parser maintains position state across partial reads rather than assuming message boundaries align with `read()` calls.
 
-The parser (`src/resp/parser.rs`) implements a zero-copy, byte-level parser for the Redis protocol:
+This was the hardest part to get right. TCP delivers a byte stream, not messages. The parser has to work correctly whether a command arrives in one chunk, split at the `\r\n`, or split mid-bulk-string.
 
-- Recognizes RESP data type prefixes (`+`, `-`, `:`, `$`, `*`, etc.)
-- Handles delimiter detection (`\r\n`) for message boundaries
-- Converts raw bytes into structured `Value` enum types
-- Supports serialization back to RESP format for responses
+### Replication Design
 
-### Command Execution Flow
+Leader-follower replication with several non-obvious implementation decisions:
 
-1. Client connects → registered with event loop
-2. Data arrives → `tcp_handler` reads from socket buffer
-3. Parser converts bytes → `Value::Array` of command components
-4. Pattern matching dispatches to appropriate command handler
-5. Handler executes operation on `Cache` (HashMap wrapper)
-6. Response serialized to RESP format and written to socket
+```
+        mio::Poll registry
+              │
+   ┌──────────┼──────────────┐
+   │          │              │
+Token(0)   Token(n)      Token(m)
+TcpListener  Client       Replica
+             conn          conn
+              │              │
+         tcp_handler    tcp_handler
+         (commands)    (REPLCONF/PSYNC
+              │         → propagation)
+           Cache              │
+         (HashMap)      offset tracking
+              │              │
+              └──── propagate writes ──►
+```
 
-## Getting Started
+**Replica tokens, not streams** — Replicas are tracked by their `mio` token rather than storing stream references. This avoids lifetime issues when iterating replicas while also holding a mutable reference to the cache — a constraint the borrow checker surfaces immediately if you try the naive approach.
 
-### Prerequisites
+**`master_repl_offset` on both sides** — The leader tracks bytes propagated; each replica tracks bytes acknowledged. `WAIT` uses this to determine when replicas have caught up. Without tracking on both sides, `WAIT` has no reliable way to determine sync state.
 
-- Rust 1.70+ (uses 2021 edition features)
-- Optional: `redis-cli` for testing
+**`WAIT` uses `mio`'s poll timeout** — non-blocking by design, loop stays alive for other events while waiting for replicas to acknowledge.
 
-### Running the Server
+**RDB transfer** — New replicas receive a full RDB snapshot before the replication stream begins. This is the standard Redis approach: snapshot establishes baseline state, replication stream handles changes from that point forward.
+
+## Key Technical Decisions
+
+**`mio` over Tokio** — Chose `mio` to understand what event loops actually do before using a framework that abstracts them. Tokio's async/await is the right production choice; `mio` is the right learning choice. They solve the same problem at different abstraction levels.
+
+**`mio` over threads** — Thread-per-connection was the first implementation (still on the `multi-threaded` branch). For I/O-bound workloads an event loop is the natural fit — one thread handles thousands of connections without per-connection thread overhead, using OS-level notification (epoll/kqueue) instead of blocking on each socket.
+
+## Lessons Learned
+
+**TCP is a byte stream, not a message stream.** Initial implementation assumed `read()` would return complete commands — it doesn't. Fixed by tracking a byte offset with a sliding window approach so the parser correctly handles commands split across multiple reads.
+
+**The borrow checker enforces better architecture.** As the codebase grew more complex, ownership errors didn't just flag bugs — they flagged design problems. The tcp_handler structure — parsing, command processing, and propagation — had to be carefully decomposed into functions with clear ownership boundaries. Where lifetimes got complicated, owned values reduced the friction for now. Zero-copy I/O is the natural next step once the structure is solid.
+
+**Non-blocking means non-blocking everywhere — except when it isn't.** One blocking call anywhere in the event loop stalls all clients. `WAIT` was initially implemented as a busy-loop on replica offsets, which tests caught. Fixed by using `mio`'s poll timeout so the loop stays alive for other events while waiting for acknowledgement. The replica-master handshake and RDB transfer are the deliberate exceptions — blocking is acceptable there since it happens once at connection time.
+
+## Running It
 
 ```bash
-# Default port (6379)
+# Start leader on default port
 cargo run
 
-# Custom port
-cargo run -- --port 8080
+# Start replica
+cargo run -- --port 6380 --replicaof localhost 6379
+
+# Verify replication
+redis-cli -p 6379 SET foo bar
+redis-cli -p 6380 GET foo  # bar
 ```
 
-### Testing
+## Status
 
-```bash
-# Using redis-cli
-redis-cli -h localhost -p 6379 PING
-# Expected: PONG
-
-redis-cli -h localhost -p 6379 SET mykey "Hello"
-# Expected: OK
-
-redis-cli -h localhost -p 6379 GET mykey
-# Expected: "Hello"
-
-redis-cli -h localhost -p 6379 SET temp "expires" PX 5000
-# Expires after 5 seconds
-```
-
-#### Testing Multiple Concurrent Connections
-
-The event loop handles multiple simultaneous clients. Test with multiple terminals:
-
-```bash
-# Terminal 1
-redis-cli -h localhost -p 6379
-> SET user1 "Alice"
-
-# Terminal 2 (simultaneously)
-redis-cli -h localhost -p 6379
-> SET user2 "Bob"
-
-# Terminal 3 (verify both)
-redis-cli -h localhost -p 6379
-> GET user1  # "Alice"
-> GET user2  # "Bob"
-```
-
-## Implementation Details
-
-### Why mio Over Threads?
-
-**Architectural Evolution**: Originally implemented with one thread per connection (preserved in `multi-threaded` branch). Migrated to event-driven architecture for better scalability.
-
-Benefits of `mio` (over both threads and Tokio):
-
-- **Scalability**: Handles thousands of connections without thread-per-connection overhead
-- **Memory Efficiency**: No per-connection thread allocation (saves 2-8MB per client)
-- **Lower-level Understanding**: Chose `mio` over Tokio to learn event loop fundamentals without async/await abstractions
-- **Real-world Learning**: Same architecture as Node.js, Nginx, and Redis itself
-- **Trade-off**: Must write non-blocking handlers, but simplifies state management
-
-### Expiry Implementation
-
-Lazy expiration using `HashMap<Vec<u8>, (Vec<u8>, Option<Instant>)>` - keys expire on access rather than via background cleanup. Simple but uses memory until accessed.
-
-### Key Trade-offs
-
-- Single-threaded (simplicity over CPU parallelism)
-- In-memory only (speed over persistence)
-- Lazy expiry (simplicity over proactive cleanup)
-- Basic HashMap (O(1) lookups, no compression)
-
-## What I Learned
-
-This project deepened my understanding of several critical systems programming concepts:
-
-### Event Loops and Non-Blocking I/O
-
-- OS event mechanisms (epoll/kqueue abstraction via `mio`)
-- Edge vs level-triggered monitoring
-- Handling `WouldBlock` errors in non-blocking sockets
-- Token-based multi-client connection management
-
-### Protocol Parsing
-
-- Byte-level parsing without external libraries
-- UTF-8 validation and zero-copy techniques
-- Enum-based protocol representations
-
-### Distributed Systems
-
-- Protocol design trade-offs (text vs binary)
-- Client-server communication patterns
-- Time-based expiration and idempotency
-
-## Future Work
-
-Continuing through CodeCrafters challenges:
-
-- **Replication**: Leader-follower architecture
-- **RDB Persistence**: Snapshot-based durability
-- **Streams**: Append-only log structure
-- **Pub/Sub**: Publisher-subscriber messaging
-
-Additional ideas: pipelining, transactions (MULTI/EXEC), clustering, benchmarking vs official Redis
+✅ Core server (RESP protocol, event loop, commands)  
+✅ Replication (handshake, RDB transfer, multi-replica propagation)  
+🔄 Persistence (RDB)  
+⏭️ Persistence (AOF)  
+⏭️ Performance optimization (zero-copy I/O)
 
 ---
 
-*This project demonstrates practical systems programming in Rust, showcasing event-driven architecture, protocol implementation, and performance-conscious design decisions.*
+Built to understand distributed systems from the inside. The goal was always genuine understanding — not a working demo, but knowing why it works.

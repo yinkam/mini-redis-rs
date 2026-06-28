@@ -28,22 +28,25 @@ Single-threaded event loop using `mio::Poll`. All socket operations are non-bloc
                     │                             │
          ┌──────────┴──────────┐                  │
          │                     │                  │
-     Token(0)?             Token(n)?             Poll 
-   New connection          Data ready             │
+      Token(0)              Token(n)             Poll 
+   New connection        Event received           │
          │                     │                  │
          ▼                     ▼                  │
   Accept + register       tcp_handler             │
    new Token(n)                │                  │
-         │               RESP parser              │
+         │                RESP parser             │
          │                     │                  │
-  replica handshake?    command processing        │
-  (REPLCONF/PSYNC)      (cache reads/writes)      │
+         │              command processing        │
+         │              (cache reads/writes)      │
          │                     │                  │
-  register Token(1..n)   Write response ──────────┘
-  before client conns
+         │               Write response           │
+         └─────────────────────┴──────────────────┘
+  
 ```
 
 > Loop repeats on every `poll()` call — `WouldBlock` on any socket operation registers interest and yields back to the loop.
+
+> Replica connections after handshake are registered before the poll loop starts.
 
 The critical constraint: `mio` requires non-blocking streams. Blocking anywhere in the event loop stalls all clients. This shaped every design decision.
 
@@ -94,7 +97,7 @@ TcpListener  Client       Replica
 
 **TCP is a byte stream, not a message stream.** Initial implementation assumed `read()` would return complete commands — it doesn't. Fixed by tracking a byte offset with a sliding window approach so the parser correctly handles commands split across multiple reads.
 
-**The borrow checker enforces better architecture.** As the codebase grew more complex, ownership errors didn't just flag bugs — they flagged design problems. The tcp_handler structure: parsing, command processing, and propagation, had to be carefully decomposed into functions with clear ownership boundaries. Where lifetimes got complicated, owned values reduced the friction for now. Zero-copy I/O is the natural next step once the structure is solid.
+**The borrow checker enforces better architecture.** As the codebase grew more complex, ownership errors didn't just flag bugs — they flagged design problems. The tcp_handler structure — parsing, command processing, and propagation — had to be carefully decomposed into functions with clear ownership boundaries. Where lifetimes got complicated, owned values reduced the friction for now. Zero-copy I/O is the natural next step once the structure is solid.
 
 **Non-blocking means non-blocking everywhere — except when it isn't.** One blocking call anywhere in the event loop stalls all clients. `WAIT` was initially implemented as a busy-loop on replica offsets, which tests caught. Fixed by using `mio`'s poll timeout so the loop stays alive for other events while waiting for acknowledgement. The replica-master handshake and RDB transfer are the deliberate exceptions — blocking is acceptable there since it happens once at connection time.
 
